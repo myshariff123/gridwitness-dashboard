@@ -1,34 +1,62 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Nav from '@/components/Nav'
-import { CheckCircle, Clock, Copy, ExternalLink, Cloud, Server, AlertTriangle } from 'lucide-react'
+import { getTelemetry } from '@/lib/api'
+import { CheckCircle, Copy, ExternalLink, Cloud, Server, AlertTriangle, Activity, Trash2, RefreshCw } from 'lucide-react'
 
-// Demo tenant — in production this comes from Cognito JWT
+const TENANT_ID = 'GW-NIMBL-AEB47A92'
+
 const DEMO_TENANT = {
-  tenant_id: 'GW-NIMBL-AEB47A92',
+  tenant_id:         TENANT_ID,
   organization_name: 'NimbleStride',
-  status: 'ACTIVE',
-  admin_email: 'support@nimblestride.ca',
+  status:            'ACTIVE',
+  admin_email:       'support@nimblestride.ca',
   subscription_tier: 'TIER_1_AUDIT',
 }
 
 export default function SettingsPage() {
-  const [copied, setCopied] = useState<string | null>(null)
+  const [copied, setCopied]               = useState<string | null>(null)
   const [carbonThreshold, setCarbonThreshold] = useState(400)
   const [disconnectAlert, setDisconnectAlert] = useState(15)
-  const [saved, setSaved] = useState(false)
+  const [saved, setSaved]                 = useState(false)
+  const [nodes, setNodes]                 = useState<Array<{id: string; grid: string; wattage: number; active: boolean}>>([])
+  const [nodesLoading, setNodesLoading]   = useState(true)
 
   const tenantId = DEMO_TENANT.tenant_id
 
+  // Load discovered nodes from real telemetry
+  useEffect(() => {
+    const load = async () => {
+      setNodesLoading(true)
+      try {
+        const records = await getTelemetry(tenantId)
+        const nodeMap: Record<string, {id: string; grid: string; wattage: number; active: boolean}> = {}
+        records.forEach(r => {
+          if (!nodeMap[r.Source]) {
+            nodeMap[r.Source] = {
+              id:      r.Source,
+              grid:    r.GridID,
+              wattage: r.ActualWattage,
+              active:  true,
+            }
+          }
+        })
+        setNodes(Object.values(nodeMap))
+      } catch {
+        setNodes([])
+      } finally {
+        setNodesLoading(false)
+      }
+    }
+    load()
+  }, [tenantId])
+
+  const toggleNode = (id: string) =>
+    setNodes(prev => prev.map(n => n.id === id ? { ...n, active: !n.active } : n))
+
   const cfnUrl = `https://ca-central-1.console.aws.amazon.com/cloudformation/home?region=ca-central-1#/stacks/create/review?templateURL=https://gw-cfn-templates-768949138583.s3.ca-central-1.amazonaws.com/gridwitness-scanner-role.yaml&param_TenantID=${tenantId}&stackName=GridWitness-Scanner-${tenantId}`
 
-  const edgeScript = `#!/bin/bash
-# GridWitness Edge Agent — One-Command Install
-# Tenant: ${tenantId}
-curl -sSL https://agent.gridwitness.ca/install.sh | \\
-  TENANT_ID="${tenantId}" \\
-  API_ENDPOINT="https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com" \\
-  bash`
+  const edgeScript = `#!/bin/bash\n# GridWitness Edge Agent\n# Tenant: ${tenantId}\ncurl -sSL https://agent.gridwitness.ca/install.sh | \\\\\n  TENANT_ID="${tenantId}" \\\\\n  API_ENDPOINT="https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com" \\\\\n  bash`
 
   const copy = (text: string, key: string) => {
     navigator.clipboard.writeText(text)
@@ -41,6 +69,9 @@ curl -sSL https://agent.gridwitness.ca/install.sh | \\
     setTimeout(() => setSaved(false), 2000)
   }
 
+  const activeNodes  = nodes.filter(n => n.active)
+  const removedNodes = nodes.filter(n => !n.active)
+
   return (
     <div className="min-h-screen bg-gw-dark">
       <Nav tenantId={tenantId} />
@@ -51,7 +82,7 @@ curl -sSL https://agent.gridwitness.ca/install.sh | \\
         <div>
           <h1 className="text-xl font-bold text-white">Integration Centre</h1>
           <p className="text-sm text-gw-muted mt-1">
-            Connect your infrastructure to begin hardware-verified carbon attestation
+            Manage your infrastructure connections and monitoring preferences
           </p>
         </div>
 
@@ -59,16 +90,20 @@ curl -sSL https://agent.gridwitness.ca/install.sh | \\
         <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-white">Account Details</h2>
-            <span className="text-xs border border-amber-500/50 text-amber-400 px-2 py-1 rounded">
-              {DEMO_TENANT.status.replace(/_/g, ' ')}
+            <span className={`text-xs border px-2 py-1 rounded font-mono ${
+              DEMO_TENANT.status === 'ACTIVE'
+                ? 'border-gw-green/50 text-gw-green'
+                : 'border-amber-500/50 text-amber-400'
+            }`}>
+              {DEMO_TENANT.status}
             </span>
           </div>
           <div className="grid grid-cols-2 gap-4 text-sm">
             {[
-              ['Tenant ID',     tenantId],
-              ['Organization',  DEMO_TENANT.organization_name],
-              ['Admin Email',   DEMO_TENANT.admin_email],
-              ['Tier',          DEMO_TENANT.subscription_tier],
+              ['Tenant ID',    tenantId],
+              ['Organization', DEMO_TENANT.organization_name],
+              ['Admin Email',  DEMO_TENANT.admin_email],
+              ['Tier',         DEMO_TENANT.subscription_tier],
             ].map(([label, value]) => (
               <div key={label}>
                 <div className="text-gw-muted text-xs mb-1">{label}</div>
@@ -76,6 +111,77 @@ curl -sSL https://agent.gridwitness.ca/install.sh | \\
               </div>
             ))}
           </div>
+        </div>
+
+        {/* Discovered Nodes */}
+        <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-white flex items-center gap-2">
+              <Activity className="w-4 h-4 text-gw-green" />
+              Discovered Nodes
+            </h2>
+            <div className="flex items-center gap-3">
+              {activeNodes.length > 0 && (
+                <span className="text-xs border border-gw-green/30 text-gw-green px-2 py-0.5 rounded">
+                  {activeNodes.length} monitored
+                </span>
+              )}
+              {removedNodes.length > 0 && (
+                <span className="text-xs border border-gw-border text-gw-muted px-2 py-0.5 rounded">
+                  {removedNodes.length} excluded
+                </span>
+              )}
+            </div>
+          </div>
+
+          {nodesLoading ? (
+            <div className="space-y-2">
+              {[1,2].map(i => <div key={i} className="h-12 bg-gw-border rounded-lg animate-pulse" />)}
+            </div>
+          ) : nodes.length === 0 ? (
+            <div className="text-sm text-gw-muted py-4 text-center">
+              No nodes discovered yet. Deploy the IAM stack below to start discovery.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {nodes.map(node => (
+                <div key={node.id} className={`flex items-center justify-between p-3 rounded-lg border transition-all ${
+                  node.active
+                    ? 'border-gw-green/20 bg-gw-dark'
+                    : 'border-gw-border bg-gw-dark opacity-50'
+                }`}>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <Cloud className={`w-4 h-4 flex-shrink-0 ${node.active ? 'text-blue-400' : 'text-gw-muted'}`} />
+                    <div className="min-w-0">
+                      <div className="font-mono text-xs text-white truncate">{node.id}</div>
+                      <div className="text-xs text-gw-muted mt-0.5">
+                        Grid: {node.grid} · {node.wattage}W
+                        {!node.active && <span className="ml-2 text-amber-400">Excluded from reports</span>}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => toggleNode(node.id)}
+                    className={`flex-shrink-0 flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border transition-colors ml-3 ${
+                      node.active
+                        ? 'border-red-500/30 text-red-400 hover:bg-red-500/10'
+                        : 'border-gw-green/30 text-gw-green hover:bg-gw-green/10'
+                    }`}
+                  >
+                    {node.active
+                      ? <><Trash2 className="w-3 h-3" /> Remove</>
+                      : <><RefreshCw className="w-3 h-3" /> Re-add</>
+                    }
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <p className="text-xs text-gw-muted mt-3">
+            Removed nodes are excluded from carbon calculations and compliance reports.
+            Re-add at any time.
+          </p>
         </div>
 
         {/* Step 1 — AWS Integration */}
@@ -89,19 +195,16 @@ curl -sSL https://agent.gridwitness.ca/install.sh | \\
               </h2>
               <p className="text-sm text-gw-muted mt-1">
                 One-click CloudFormation deployment. Creates a read-only role in your AWS account.
-                GridWitness uses it to discover your EC2 instances. No inbound connections.
+                GridWitness uses it to discover your EC2 instances across all regions.
               </p>
             </div>
           </div>
-
           <div className="bg-gw-dark border border-gw-border rounded-lg p-3 mb-4 flex items-center gap-2">
             <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
             <p className="text-xs text-gw-muted">
-              This creates an IAM role with <strong className="text-white">read-only</strong> permissions only.
-              GridWitness cannot modify, delete, or access your data — only discover running EC2 instances.
+              Read-only permissions only. GridWitness cannot modify, delete, or access your data.
             </p>
           </div>
-
           <a
             href={cfnUrl}
             target="_blank"
@@ -111,9 +214,8 @@ curl -sSL https://agent.gridwitness.ca/install.sh | \\
             <ExternalLink className="w-4 h-4" />
             Deploy IAM Stack in AWS Console
           </a>
-
           <p className="text-xs text-gw-muted mt-3">
-            After deployment, your account status will automatically flip to <span className="text-gw-green">ACTIVE</span> within 60 seconds.
+            After deployment, new instances appear in Discovered Nodes within 2 minutes.
           </p>
         </div>
 
@@ -127,12 +229,10 @@ curl -sSL https://agent.gridwitness.ca/install.sh | \\
                 Install Physical Edge Agent (Optional)
               </h2>
               <p className="text-sm text-gw-muted mt-1">
-                For physical servers and on-premise hardware. Reads actual wattage from BMC Redfish API.
-                Outbound-only — opens no inbound ports.
+                For physical servers with BMC Redfish API. Reads actual wattage. Outbound-only.
               </p>
             </div>
           </div>
-
           <div className="bg-gw-dark border border-gw-border rounded-lg p-4 font-mono text-xs text-gw-green relative">
             <pre className="whitespace-pre-wrap">{edgeScript}</pre>
             <button
@@ -152,9 +252,7 @@ curl -sSL https://agent.gridwitness.ca/install.sh | \\
           <h2 className="font-semibold text-white mb-4">Alert Thresholds</h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             <div>
-              <label className="text-xs text-gw-muted block mb-2">
-                Grid Carbon Alert (gCO2/kWh)
-              </label>
+              <label className="text-xs text-gw-muted block mb-2">Grid Carbon Alert (gCO₂/kWh)</label>
               <input
                 type="number"
                 value={carbonThreshold}
@@ -164,9 +262,7 @@ curl -sSL https://agent.gridwitness.ca/install.sh | \\
               <p className="text-xs text-gw-muted mt-1">Alberta grid averages 510 · Ontario averages 42</p>
             </div>
             <div>
-              <label className="text-xs text-gw-muted block mb-2">
-                Node Disconnect Alert (minutes)
-              </label>
+              <label className="text-xs text-gw-muted block mb-2">Node Disconnect Alert (minutes)</label>
               <input
                 type="number"
                 value={disconnectAlert}
