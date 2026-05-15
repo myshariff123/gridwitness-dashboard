@@ -112,11 +112,11 @@ export async function generateReport(
   const res = await fetch(`${API}/api/reports/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      tenant_id:  tenantId,
-      start_date: `${dateFrom}T00:00:00Z`,
-      end_date:   `${dateTo}T23:59:59Z`,
-      format:     'PDF',
+        body: JSON.stringify({
+      tenant_id: tenantId,
+      date_from: `${dateFrom}T00:00:00Z`,
+      date_to:   `${dateTo}T23:59:59Z`,
+      format:    'PDF',
     }),
   })
   if (!res.ok) throw new Error(`Report failed: ${res.status}`)
