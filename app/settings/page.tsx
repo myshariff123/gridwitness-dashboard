@@ -20,7 +20,7 @@ export default function SettingsPage() {
 
   const tenantId = DEMO_TENANT.tenant_id
 
-  const cfnUrl = `https://ca-central-1.console.aws.amazon.com/cloudformation/home?region=ca-central-1#/stacks/create/review?templateURL=https://gridwitness-cfn-templates.s3.ca-central-1.amazonaws.com/gridwitness-scanner-role.yaml&param_TenantID=${tenantId}&stackName=GridWitness-Scanner-${tenantId}`
+  const cfnUrl = `https://ca-central-1.console.aws.amazon.com/cloudformation/home?region=ca-central-1#/stacks/create/review?templateURL=https://gw-cfn-templates-768949138583.s3.ca-central-1.amazonaws.com/gridwitness-scanner-role.yaml&param_TenantID=${tenantId}&stackName=GridWitness-Scanner-${tenantId}`
 
   const edgeScript = `#!/bin/bash
 # GridWitness Edge Agent — One-Command Install
