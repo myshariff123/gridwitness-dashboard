@@ -7,7 +7,7 @@ import { CheckCircle, Clock, Copy, ExternalLink, Cloud, Server, AlertTriangle } 
 const DEMO_TENANT = {
   tenant_id: 'GW-NIMBL-AEB47A92',
   organization_name: 'NimbleStride',
-  status: 'PENDING_IAM_ROLE',
+  status: 'ACTIVE',
   admin_email: 'support@nimblestride.ca',
   subscription_tier: 'TIER_1_AUDIT',
 }
