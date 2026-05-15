@@ -33,16 +33,24 @@ export async function checkHealth(): Promise<boolean> {
   try {
     const res = await fetch(`${API}/health`, { cache: 'no-store' })
     return res.ok
-  } catch { return false }
+  } catch {
+    return false
+  }
 }
 
 export async function provisionTenant(
-  orgName: string, adminEmail: string, tier = 'TIER_1_AUDIT'
+  orgName: string,
+  adminEmail: string,
+  tier = 'TIER_1_AUDIT'
 ): Promise<TenantProvisionResponse> {
   const res = await fetch(`${API}/api/tenant/provision`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ organization_name: orgName, admin_email: adminEmail, subscription_tier: tier }),
+    body: JSON.stringify({
+      organization_name: orgName,
+      admin_email: adminEmail,
+      subscription_tier: tier,
+    }),
   })
   if (!res.ok) throw new Error(`Provisioning failed: ${res.status}`)
   return res.json()
@@ -82,11 +90,12 @@ export async function getTelemetry(tenantId: string): Promise<TelemetryRecord[]>
 export async function getCarbonSummary(tenantId: string) {
   const records = await getTelemetry(tenantId)
 
-  // Show all records — no 24h filter since data may be hours old during staging
   const active = records
 
   const cloudNodes = active.filter(r => r.DataSource === 'CLOUD_DISCOVERY')
-  const physNodes  = active.filter(r => r.DataSource === 'EDGE_AGENT' || r.DataSource === 'REDFISH_BMC')
+  const physNodes  = active.filter(r =>
+    r.DataSource === 'EDGE_AGENT' || r.DataSource === 'REDFISH_BMC'
+  )
 
   const scope2 = physNodes.reduce((s, r)  => s + (r.CarbonDebt_gCO2 || 0), 0)
   const scope3 = cloudNodes.reduce((s, r) => s + (r.CarbonDebt_gCO2 || 0), 0)
@@ -107,12 +116,14 @@ export async function getCarbonSummary(tenantId: string) {
 }
 
 export async function generateReport(
-  tenantId: string, dateFrom: string, dateTo: string
+  tenantId: string,
+  dateFrom: string,
+  dateTo: string
 ): Promise<{ status: string; message: string }> {
   const res = await fetch(`${API}/api/reports/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+    body: JSON.stringify({
       tenant_id: tenantId,
       date_from: `${dateFrom}T00:00:00Z`,
       date_to:   `${dateTo}T23:59:59Z`,
