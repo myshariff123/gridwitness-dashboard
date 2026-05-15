@@ -92,7 +92,7 @@ export default function DeviceStream({ records, loading }: Props) {
                     </span>
                   </td>
                   <td className="py-2.5 pr-4 text-right font-mono text-gw-muted">
-                    {(r.CarbonDebt_gCO2 * 1000).toFixed(3)}
+                    {(r.CarbonDebt_gCO2.toFixed(3)}
                   </td>
                   <td className="py-2.5 text-right text-gw-muted">
                     {new Date(r.Timestamp).toLocaleTimeString('en-CA', { hour12: false })}
