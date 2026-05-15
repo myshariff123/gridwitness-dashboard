@@ -59,9 +59,9 @@ export default function DeviceStream({ records, loading }: Props) {
           </thead>
           <tbody className="divide-y divide-gw-border/50">
             {loading ? (
-              Array.from({length: 4}, (_, i) => (
+              Array.from({ length: 4 }, (_, i) => (
                 <tr key={i}>
-                  {Array.from({length: 6}, (_, j) => (
+                  {Array.from({ length: 6 }, (_, j) => (
                     <td key={j} className="py-2.5 pr-4">
                       <div className="h-3.5 bg-gw-border rounded animate-pulse" />
                     </td>
@@ -92,7 +92,7 @@ export default function DeviceStream({ records, loading }: Props) {
                     </span>
                   </td>
                   <td className="py-2.5 pr-4 text-right font-mono text-gw-muted">
-                    {(r.CarbonDebt_gCO2.toFixed(3)}
+                    {r.CarbonDebt_gCO2.toFixed(3)}
                   </td>
                   <td className="py-2.5 text-right text-gw-muted">
                     {new Date(r.Timestamp).toLocaleTimeString('en-CA', { hour12: false })}
