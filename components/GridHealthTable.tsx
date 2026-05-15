@@ -1,5 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
+import { getLiveGridData, type GridEntry } from '@/lib/api'
 import { Zap } from 'lucide-react'
 
 interface GridEntry {
@@ -42,10 +43,22 @@ function getMockGridData(): GridEntry[] {
 export default function GridHealthTable({ loading }: { loading: boolean }) {
   const [grids, setGrids] = useState<GridEntry[]>(getMockGridData())
 
-  useEffect(() => {
-    const interval = setInterval(() => setGrids(getMockGridData()), 30000)
-    return () => clearInterval(interval)
-  }, [])
+useEffect(() => {
+  const load = async () => {
+    const data = await getLiveGridData()
+    const mapped = data.map(g => ({
+      id: g.GridID,
+      province: { AB: 'Alberta', ON: 'Ontario', BC: 'British Columbia', QC: 'Québec' }[g.GridID] ?? g.GridID,
+      source: { AB: 'AESO', ON: 'IESO', BC: 'BC Hydro', QC: 'Hydro-QC' }[g.GridID] ?? 'Grid',
+      intensity: g.CarbonIntensity,
+      status: getStatus(g.CarbonIntensity),
+    }))
+    setGrids(mapped)
+  }
+  load()
+  const interval = setInterval(load, 30000)
+  return () => clearInterval(interval)
+}, [])
 
   return (
     <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
