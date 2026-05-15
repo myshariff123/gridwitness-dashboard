@@ -1,18 +1,17 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { getLiveGridData, type GridEntry } from '@/lib/api'
+import { getLiveGridData } from '@/lib/api'
 import { Zap } from 'lucide-react'
 
-interface GridEntry {
+interface LocalGridEntry {
   id:        string
   province:  string
   source:    string
-  intensity: number   // gCO2/kWh
+  intensity: number
   status:    'optimal' | 'warning' | 'critical'
 }
 
-// Carbon intensity thresholds
-function getStatus(intensity: number): GridEntry['status'] {
+function getStatus(intensity: number): LocalGridEntry['status'] {
   if (intensity < 100) return 'optimal'
   if (intensity < 300) return 'warning'
   return 'critical'
@@ -30,35 +29,32 @@ const statusLabels = {
   critical: '● CRITICAL',
 }
 
-// Mock grid data — in production pulled from gw-grid-cache-staging
-function getMockGridData(): GridEntry[] {
-  return [
-    { id: 'AB', province: 'Alberta',        source: 'AESO',     intensity: 490 + Math.random() * 40,  status: 'critical' },
-    { id: 'ON', province: 'Ontario',        source: 'IESO',     intensity: 38  + Math.random() * 15,  status: 'optimal'  },
-    { id: 'BC', province: 'British Columbia', source: 'BC Hydro', intensity: 12  + Math.random() * 8,   status: 'optimal'  },
-    { id: 'QC', province: 'Québec',         source: 'Hydro-QC', intensity: 2   + Math.random() * 3,   status: 'optimal'  },
-  ].map(g => ({ ...g, status: getStatus(g.intensity) }))
+const PROVINCE_NAMES: Record<string, string> = {
+  AB: 'Alberta', ON: 'Ontario', BC: 'British Columbia', QC: 'Québec'
+}
+const PROVINCE_SOURCES: Record<string, string> = {
+  AB: 'AESO', ON: 'IESO', BC: 'BC Hydro', QC: 'Hydro-QC'
 }
 
 export default function GridHealthTable({ loading }: { loading: boolean }) {
-  const [grids, setGrids] = useState<GridEntry[]>(getMockGridData())
+  const [grids, setGrids] = useState<LocalGridEntry[]>([])
 
-useEffect(() => {
-  const load = async () => {
-    const data = await getLiveGridData()
-    const mapped = data.map(g => ({
-      id: g.GridID,
-      province: { AB: 'Alberta', ON: 'Ontario', BC: 'British Columbia', QC: 'Québec' }[g.GridID] ?? g.GridID,
-      source: { AB: 'AESO', ON: 'IESO', BC: 'BC Hydro', QC: 'Hydro-QC' }[g.GridID] ?? 'Grid',
-      intensity: g.CarbonIntensity,
-      status: getStatus(g.CarbonIntensity),
-    }))
-    setGrids(mapped)
-  }
-  load()
-  const interval = setInterval(load, 30000)
-  return () => clearInterval(interval)
-}, [])
+  useEffect(() => {
+    const load = async () => {
+      const data = await getLiveGridData()
+      const mapped = data.map(g => ({
+        id:        g.GridID,
+        province:  PROVINCE_NAMES[g.GridID]  ?? g.GridID,
+        source:    PROVINCE_SOURCES[g.GridID] ?? 'Grid',
+        intensity: g.CarbonIntensity,
+        status:    getStatus(g.CarbonIntensity),
+      }))
+      setGrids(mapped)
+    }
+    load()
+    const interval = setInterval(load, 30000)
+    return () => clearInterval(interval)
+  }, [])
 
   return (
     <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
@@ -68,7 +64,7 @@ useEffect(() => {
         <span className="ml-auto text-xs text-gw-muted font-normal">Live · gCO₂/kWh</span>
       </h2>
 
-      {loading ? (
+      {loading || grids.length === 0 ? (
         <div className="space-y-3">
           {[1,2,3,4].map(i => (
             <div key={i} className="h-10 bg-gw-border rounded animate-pulse" />
