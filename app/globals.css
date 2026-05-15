@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --gw-green: #21de9a;
+  --gw-dark: #0d1117;
+  --gw-panel: #161b22;
+  --gw-border: #21263a;
+  --gw-muted: #8b949e;
+}
+
+body {
+  background: var(--gw-dark);
+  color: #e6edf3;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--gw-dark); }
+::-webkit-scrollbar-thumb { background: var(--gw-border); border-radius: 3px; }
+
+/* Glow effect for live indicators */
+.gw-glow {
+  box-shadow: 0 0 8px rgba(33, 222, 154, 0.4);
+}
+
+/* Pulse animation for live badge */
+@keyframes gw-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.gw-pulse { animation: gw-pulse 2s ease-in-out infinite; }
