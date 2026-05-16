@@ -117,9 +117,10 @@ export default function ActiveIncidents() {
           <CheckCircle className="w-5 h-5 text-gw-green flex-shrink-0" />
           <div>
             <div className="font-semibold text-white text-sm">All Grids Operating Normally</div>
-            <div className="text-xs text-gw-muted mt-0.5">
-              No active incidents across monitored grids · Last checked {lastCheck.toLocaleTimeString('en-CA', { hour12: false })}
-            </div>
+           <div className="text-xs text-gw-muted mt-0.5">
+  No threshold incidents — all monitored grids are within your configured limits ·
+  Last checked {lastCheck.toLocaleTimeString('en-CA', { hour12: false })}
+</div>
           </div>
         </div>
       </div>
