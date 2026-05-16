@@ -29,6 +29,48 @@ export interface TenantProvisionResponse {
   created_at: string
 }
 
+export interface GridThresholds {
+  gridId:        string
+  carbonAlert:   number   // gCO2/kWh — breach triggers incident
+  loadAlert:     number   // % of capacity — critical for QC/BC
+  priceAlert:    number   // $/MWh — AESO only
+  description:   string
+}
+
+// Grid-specific default thresholds based on each grid's historical profile
+// AB is always dirty (510 baseline) — threshold set high to catch genuine spikes
+// QC is always clean — load is the critical factor, not carbon
+export const DEFAULT_GRID_THRESHOLDS: GridThresholds[] = [
+  {
+    gridId:      'AB',
+    carbonAlert: 650,
+    loadAlert:   90,
+    priceAlert:  150,
+    description: 'Alberta — AESO. Baseline ~510 gCO2/kWh coal/gas mix. Alert on genuine spikes above 650. Price alert at $150/MWh (historical avg ~$60).',
+  },
+  {
+    gridId:      'ON',
+    carbonAlert: 100,
+    loadAlert:   85,
+    priceAlert:  120,
+    description: 'Ontario — IESO. Mostly nuclear/hydro. Alert on carbon above 100 (gas peakers). Price alert at $120/MWh.',
+  },
+  {
+    gridId:      'BC',
+    carbonAlert: 40,
+    loadAlert:   88,
+    priceAlert:  80,
+    description: 'British Columbia — BC Hydro. Almost entirely hydro. Carbon alert at 40 flags rare fossil backup. Load is secondary concern.',
+  },
+  {
+    gridId:      'QC',
+    carbonAlert: 15,
+    loadAlert:   82,
+    priceAlert:  60,
+    description: 'Québec — Hydro-QC. Near-zero carbon. Load threshold 82% is primary alert — grid stress here is a capacity issue not emissions.',
+  },
+]
+
 export async function checkHealth(): Promise<boolean> {
   try {
     const res = await fetch(`${API}/health`, { cache: 'no-store' })
@@ -48,7 +90,7 @@ export async function provisionTenant(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       organization_name: orgName,
-      admin_email: adminEmail,
+      admin_email:       adminEmail,
       subscription_tier: tier,
     }),
   })
@@ -63,6 +105,7 @@ export async function getLiveGridData(): Promise<GridEntry[]> {
     const data = await res.json()
     return data.grids || []
   } catch {
+    // Fallback to known baselines if API unreachable
     return [
       { GridID: 'AB', CapturedAt: new Date().toISOString(), CarbonIntensity: 510, DataQuality: 'FALLBACK' },
       { GridID: 'ON', CapturedAt: new Date().toISOString(), CarbonIntensity: 40,  DataQuality: 'FALLBACK' },
@@ -115,6 +158,7 @@ export async function getCarbonSummary(tenantId: string) {
   }
 }
 
+// Report generation — uses date_from/date_to as expected by ms-osfi-reporting Lambda
 export async function generateReport(
   tenantId: string,
   dateFrom: string,
