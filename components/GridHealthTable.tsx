@@ -88,9 +88,10 @@ export default function GridHealthTable({ loading }: { loading: boolean }) {
         </div>
       )}
 
-      <p className="text-xs text-gw-muted mt-3">
-        Optimal: &lt;100 · Warning: 100–300 · Critical: &gt;300 gCO₂/kWh
-      </p>
+    <p className="text-xs text-gw-muted mt-3">
+  Optimal: &lt;100 · Warning: 100–300 · Critical: &gt;300 gCO₂/kWh (global standard) ·
+  <span className="text-gw-green ml-1">Incident thresholds are configured per-grid in Settings</span>
+</p>
     </div>
   )
 }
