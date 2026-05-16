@@ -5,11 +5,12 @@ import CarbonDebtWidget from '@/components/CarbonDebtWidget'
 import GridHealthTable from '@/components/GridHealthTable'
 import ScopeChart from '@/components/ScopeChart'
 import DeviceStream from '@/components/DeviceStream'
+import ActiveIncidents from '@/components/ActiveIncidents'
 import { getCarbonSummary } from '@/lib/api'
 import { RefreshCw, AlertTriangle } from 'lucide-react'
 
 const TENANT_ID = 'GW-NIMBL-AEB47A92'
-const REFRESH_INTERVAL = 30000 // 30 seconds
+const REFRESH_INTERVAL = 30000
 
 export default function MonitorPage() {
   const [summary, setSummary]     = useState<Awaited<ReturnType<typeof getCarbonSummary>> | null>(null)
@@ -26,21 +27,19 @@ export default function MonitorPage() {
       setSummary(data)
       setLastRefresh(new Date())
       setCountdown(30)
-    } catch (e) {
+    } catch {
       setError('Failed to reach GridWitness API. Retrying...')
     } finally {
       setLoading(false)
     }
   }, [])
 
-  // Initial load + auto-refresh
   useEffect(() => { refresh() }, [refresh])
   useEffect(() => {
     const interval = setInterval(refresh, REFRESH_INTERVAL)
     return () => clearInterval(interval)
   }, [refresh])
 
-  // Countdown timer
   useEffect(() => {
     const tick = setInterval(() => setCountdown(c => c > 0 ? c - 1 : 30), 1000)
     return () => clearInterval(tick)
@@ -52,7 +51,7 @@ export default function MonitorPage() {
 
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
 
-        {/* Header row */}
+        {/* Header */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-bold text-white">Live Telemetry Dashboard</h1>
@@ -61,9 +60,7 @@ export default function MonitorPage() {
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-xs text-gw-muted">
-              Next refresh in {countdown}s
-            </span>
+            <span className="text-xs text-gw-muted">Next refresh in {countdown}s</span>
             <button
               onClick={refresh}
               disabled={loading}
@@ -83,7 +80,10 @@ export default function MonitorPage() {
           </div>
         )}
 
-        {/* Top KPI widgets */}
+        {/* Active Grid Incidents — shown only when incidents exist */}
+        <ActiveIncidents />
+
+        {/* KPI widgets */}
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <CarbonDebtWidget
             label="Net Carbon Debt (24h)"
@@ -110,7 +110,7 @@ export default function MonitorPage() {
           />
         </div>
 
-        {/* Charts row */}
+        {/* Charts */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <ScopeChart
             scope2={summary?.scope2Kg ?? 0}
