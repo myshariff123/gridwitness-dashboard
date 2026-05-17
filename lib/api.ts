@@ -162,7 +162,8 @@ export async function getCarbonSummary(tenantId: string) {
 export async function generateReport(
   tenantId: string,
   dateFrom: string,
-  dateTo: string
+  dateTo: string,
+  frameworks: string[] = ['OSFI_B15', 'BILL_C59']
 ): Promise<{ status: string; message: string }> {
   const res = await fetch(`${API}/api/reports/generate`, {
     method: 'POST',
@@ -172,9 +173,9 @@ export async function generateReport(
       date_from: `${dateFrom}T00:00:00Z`,
       date_to:   `${dateTo}T23:59:59Z`,
       format:    'PDF',
+      frameworks,
     }),
   })
-  // API Gateway SQS integration returns HTTP 200 with XML — never call res.json()
   if (res.status >= 200 && res.status < 300) {
     return { status: 'QUEUED', message: 'Report queued successfully' }
   }
