@@ -174,6 +174,10 @@ export async function generateReport(
       format:    'PDF',
     }),
   })
-  if (!res.ok) throw new Error(`Report failed: ${res.status}`)
-  return res.json()
+  // SQS integration returns HTTP 200 with XML body — do NOT call res.json()
+  // Treat any 2xx as success
+  if (res.status >= 200 && res.status < 300) {
+    return { status: 'QUEUED', message: 'Report queued successfully' }
+  }
+  throw new Error(`Report failed: ${res.status}`)
 }
