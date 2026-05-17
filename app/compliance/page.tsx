@@ -81,7 +81,7 @@ export default function CompliancePage() {
     setDownloadUrl(null)
     setReportId(null)
     try {
-      await generateReport(TENANT_ID, dateFrom, dateTo)
+      await generateReport(TENANT_ID, dateFrom, dateTo, frameworks)
       setState('polling')
       await new Promise(r => setTimeout(r, 15000)) // give Lambda 15s to process
       await poll()
