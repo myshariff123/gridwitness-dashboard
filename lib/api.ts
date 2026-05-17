@@ -174,8 +174,7 @@ export async function generateReport(
       format:    'PDF',
     }),
   })
-  // SQS integration returns HTTP 200 with XML body — do NOT call res.json()
-  // Treat any 2xx as success
+  // API Gateway SQS integration returns HTTP 200 with XML — never call res.json()
   if (res.status >= 200 && res.status < 300) {
     return { status: 'QUEUED', message: 'Report queued successfully' }
   }
