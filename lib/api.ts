@@ -181,3 +181,87 @@ export async function generateReport(
   }
   throw new Error(`Report failed: ${res.status}`)
 }
+// ════════════════════════════════════════════════════════════════
+// APPEND THIS BLOCK TO lib/api.ts in your dashboard repo
+// (or replace the file end — keep all existing exports above)
+// ════════════════════════════════════════════════════════════════
+
+export interface Incident {
+  TenantID:           string
+  IncidentID:         string
+  GridID:             string
+  Metric:             string       // carbon_intensity | load_pct | price_mwh
+  Status:             'OPEN' | 'CLOSED'
+  Severity:           'WARNING' | 'CRITICAL'
+  BreachValue:        number
+  PeakValue?:         number
+  Threshold:          number
+  OpenedAt:           string
+  LastObservedAt?:    string
+  ClosedAt?:          string
+  ClosureValue?:      number
+  ClosureReason?:     string
+  LastAction?:        string
+  LastActionAt?:      string
+  ActionsTaken?:      Array<{ action: string; at: string; by: string; notes?: string }>
+}
+
+export async function listIncidents(
+  tenantId: string,
+  status?: 'OPEN' | 'CLOSED'
+): Promise<Incident[]> {
+  try {
+    const url = new URL(`${API}/api/incidents`)
+    url.searchParams.set('tenant_id', tenantId)
+    if (status) url.searchParams.set('status', status)
+    const res = await fetch(url.toString(), { cache: 'no-store' })
+    if (!res.ok) throw new Error(`Incidents API ${res.status}`)
+    const data = await res.json()
+    return data.incidents || []
+  } catch (e) {
+    console.warn('listIncidents failed:', e)
+    return []
+  }
+}
+
+export async function recordIncidentAction(
+  tenantId:    string,
+  incidentId:  string,
+  action:      'Acknowledge' | 'K8s_Scale_Down' | 'Manual_Power_Reduction',
+  actorEmail:  string,
+  notes:       string = ''
+): Promise<{ sealed_hash: string }> {
+  const res = await fetch(`${API}/api/incidents/${incidentId}/action`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({
+      tenant_id:    tenantId,
+      incident_id:  incidentId,
+      action,
+      actor_email:  actorEmail,
+      notes,
+    }),
+  })
+  if (!res.ok) throw new Error(`Action failed: ${res.status}`)
+  return res.json()
+}
+
+export async function closeIncident(
+  tenantId:    string,
+  incidentId:  string,
+  actorEmail:  string,
+  reason:      string = 'manual_close'
+): Promise<{ sealed_hash: string }> {
+  const res = await fetch(`${API}/api/incidents/${incidentId}/close`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({
+      tenant_id:    tenantId,
+      incident_id:  incidentId,
+      actor_email:  actorEmail,
+      reason,
+    }),
+  })
+  if (!res.ok) throw new Error(`Close failed: ${res.status}`)
+  return res.json()
+}
