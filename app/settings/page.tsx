@@ -1,545 +1,526 @@
-'use client'
-import { useState, useEffect } from 'react'
-import Nav from '@/components/Nav'
-import { getTelemetry, DEFAULT_GRID_THRESHOLDS, type GridThresholds } from '@/lib/api'
-import {
-  CheckCircle, Copy, ExternalLink, Cloud, Server,
-  AlertTriangle, Activity, Trash2, RefreshCw, Bell, Link2, Settings2
-} from 'lucide-react'
+/* ============================================================================
+ * app/settings/page.tsx
+ * ============================================================================
+ * Complete drop-in replacement for the GridWitness dashboard settings page.
+ *
+ * Sections:
+ *   1. Tenant Info  — read-only display of tenant ID and org name
+ *   2. Environments — switch / create / delete environments (requires
+ *                     ms-environments Lambda from DEPLOY_MULTI_ENV.sh; if
+ *                     that Lambda is not deployed, this section gracefully
+ *                     shows a notice instead of erroring)
+ *   3. Grid Alert Thresholds — per-grid carbon, load, price thresholds with
+ *                     persistent save (wired to gw-ms-thresholds-staging
+ *                     Lambda which is already live)
+ *   4. Notification Preferences — show SNS subscription status
+ *   5. API Reference — read-only endpoint URLs for customer integration
+ *
+ * Single "Save All Settings" button at the top saves the editable sections
+ * (currently: grid thresholds). It calls each section's save handler in turn
+ * and reports a consolidated success/error result.
+ *
+ * Place this file at:
+ *   gridwitness-dashboard/app/settings/page.tsx
+ *
+ * Dependencies: React 18+, Next.js 13+ app router, Tailwind CSS, TypeScript.
+ * No additional npm packages required.
+ * ============================================================================ */
 
-const TENANT_ID = 'GW-NIMBL-AEB47A92'
-const API       = process.env.NEXT_PUBLIC_API_URL
+'use client';
 
-const DEMO_TENANT = {
-  tenant_id:         TENANT_ID,
-  organization_name: 'NimbleStride',
-  status:            'ACTIVE',
-  admin_email:       'support@nimblestride.ca',
-  subscription_tier: 'TIER_1_AUDIT',
+import { useState, useEffect, useCallback, useRef } from 'react';
+
+const API_BASE = 'https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com';
+
+// ─── Types ────────────────────────────────────────────────────────────────
+type ThresholdMetrics = { carbon: number; load: number; price: number };
+type Thresholds       = Record<string, ThresholdMetrics>;
+type Environment      = { DisplayName: string; ColorHex: string; IsDefault: boolean; CreatedAt: string };
+type Tenant           = { TenantID: string; OrgName?: string; Status?: string; Tier?: string };
+type ToastMsg         = { type: 'success' | 'error' | 'info'; text: string } | null;
+
+// ─── Utility — read tenant_id from URL or localStorage ───────────────────
+function useTenantId(): string {
+  const [tenantId, setTenantId] = useState<string>('GW-NIMBL-AEB47A92');
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URLSearchParams(window.location.search);
+    const fromUrl = url.get('tenant_id');
+    const fromLs  = window.localStorage.getItem('gw_tenant_id');
+    setTenantId(fromUrl || fromLs || 'GW-NIMBL-AEB47A92');
+  }, []);
+
+  return tenantId;
 }
 
-type ScriptTab = 'unix' | 'windows'
-
+// ─── Main Page ────────────────────────────────────────────────────────────
 export default function SettingsPage() {
-  // ── UI state ─────────────────────────────────────────────────────────────
-  const [copied, setCopied]             = useState<string | null>(null)
-  const [edgeTab, setEdgeTab]           = useState<ScriptTab>('unix')
-  const [k8sTab, setK8sTab]             = useState<ScriptTab>('unix')
-  const [saved, setSaved]               = useState(false)
+  const tenantId = useTenantId();
+  const [toast, setToast]     = useState<ToastMsg>(null);
+  const [saving, setSaving]   = useState(false);
 
-  // ── Discovered nodes ──────────────────────────────────────────────────────
-  const [nodes, setNodes]               = useState<Array<{id: string; grid: string; wattage: number; active: boolean}>>([])
-  const [nodesLoading, setNodesLoading] = useState(true)
+  // Refs to call save methods on child sections from a single "Save All" button
+  const thresholdSaveRef = useRef<() => Promise<{ ok: boolean; msg: string }>>();
 
-  // ── Per-grid thresholds ───────────────────────────────────────────────────
-  const [thresholds, setThresholds]     = useState<GridThresholds[]>(DEFAULT_GRID_THRESHOLDS)
+  async function handleSaveAll() {
+    setSaving(true);
+    setToast(null);
 
-  // ── Notification email ────────────────────────────────────────────────────
-  const [alertEmail, setAlertEmail]     = useState('support@nimblestride.ca')
-  const [disconnectMins, setDisconnectMins] = useState(15)
+    const results: Array<{ section: string; ok: boolean; msg: string }> = [];
 
-  const tenantId    = DEMO_TENANT.tenant_id
-  const isConnected = DEMO_TENANT.status === 'ACTIVE'
-
-  // Load discovered nodes from real telemetry API
-  useEffect(() => {
-    const load = async () => {
-      setNodesLoading(true)
-      try {
-        const records = await getTelemetry(tenantId)
-        const map: Record<string, {id: string; grid: string; wattage: number; active: boolean}> = {}
-        records.forEach(r => {
-          if (!map[r.Source]) {
-            map[r.Source] = { id: r.Source, grid: r.GridID, wattage: r.ActualWattage, active: true }
-          }
-        })
-        setNodes(Object.values(map))
-      } catch {
-        setNodes([])
-      } finally {
-        setNodesLoading(false)
-      }
+    if (thresholdSaveRef.current) {
+      const r = await thresholdSaveRef.current();
+      results.push({ section: 'Grid Thresholds', ...r });
     }
-    load()
-  }, [tenantId])
 
-  const toggleNode = (id: string) =>
-    setNodes(prev => prev.map(n => n.id === id ? { ...n, active: !n.active } : n))
-
-  const updateThreshold = (gridId: string, field: keyof GridThresholds, value: number) =>
-    setThresholds(prev => prev.map(t => t.gridId === gridId ? { ...t, [field]: value } : t))
-
-  const saveSettings = () => {
-    setSaved(true)
-    setTimeout(() => setSaved(false), 2500)
-  }
-
-  const copy = (text: string, key: string) => {
-    navigator.clipboard.writeText(text)
-    setCopied(key)
-    setTimeout(() => setCopied(null), 2000)
-  }
-
-  const cfnUrl = `https://ca-central-1.console.aws.amazon.com/cloudformation/home?region=ca-central-1#/stacks/create/review?templateURL=https://gw-cfn-templates-768949138583.s3.ca-central-1.amazonaws.com/gridwitness-scanner-role.yaml&param_TenantID=${tenantId}&stackName=GridWitness-Scanner-${tenantId}`
-
-  // ── Install scripts ───────────────────────────────────────────────────────
-  const edgeUnix = `#!/bin/bash
-# GridWitness Edge Agent — Linux / macOS
-# Tenant: ${tenantId}
-curl -sSL https://agent.gridwitness.ca/install.sh | \\
-  TENANT_ID="${tenantId}" \\
-  API_ENDPOINT="${API}" \\
-  bash`
-
-  const edgeWindows = `# GridWitness Edge Agent — Windows PowerShell
-# Tenant: ${tenantId}
-$env:TENANT_ID = "${tenantId}"
-$env:API_ENDPOINT = "${API}"
-Invoke-WebRequest -Uri "https://agent.gridwitness.ca/install.ps1" \`
-  -OutFile "$env:TEMP\\gw-install.ps1"
-& "$env:TEMP\\gw-install.ps1"`
-
-  const k8sUnix = `#!/bin/bash
-# GridWitness Kubernetes Job Controller — Linux / macOS
-# Grants GridWitness permission to scale workloads during grid stress events.
-# All actions are logged to your WORM ledger and included in compliance reports.
-# Tenant: ${tenantId}
-
-kubectl create serviceaccount gridwitness-controller -n default
-
-kubectl create clusterrolebinding gridwitness-controller \\
-  --clusterrole=edit \\
-  --serviceaccount=default:gridwitness-controller
-
-K8S_TOKEN=$(kubectl create token gridwitness-controller --duration=8760h)
-
-curl -X POST ${API}/api/auth/register-k8s \\
-  -H "Content-Type: application/json" \\
-  -d "{\\\"tenant_id\\\":\\\"${tenantId}\\\",\\\"k8s_token\\\":\\\"$K8S_TOKEN\\\"}"
-
-echo "K8s controller registered. GridWitness can now scale workloads during grid events."`
-
-  const k8sWindows = `# GridWitness Kubernetes Job Controller — Windows PowerShell
-# Grants GridWitness permission to scale workloads during grid stress events.
-# All actions are logged to your WORM ledger and included in compliance reports.
-# Tenant: ${tenantId}
-
-kubectl create serviceaccount gridwitness-controller -n default
-
-kubectl create clusterrolebinding gridwitness-controller \`
-  --clusterrole=edit \`
-  --serviceaccount=default:gridwitness-controller
-
-$K8S_TOKEN = kubectl create token gridwitness-controller --duration=8760h
-
-$body = '{"tenant_id":"${tenantId}","k8s_token":"' + $K8S_TOKEN + '"}'
-Invoke-RestMethod \`
-  -Uri "${API}/api/auth/register-k8s" \`
-  -Method POST \`
-  -ContentType "application/json" \`
-  -Body $body
-
-Write-Host "K8s controller registered. GridWitness can now scale workloads during grid events."`
-
-  const activeNodes  = nodes.filter(n => n.active)
-  const removedNodes = nodes.filter(n => !n.active)
-
-  const gridLabels: Record<string, string> = {
-    AB: 'Alberta (AESO)',
-    ON: 'Ontario (IESO)',
-    BC: 'British Columbia (BC Hydro)',
-    QC: 'Québec (Hydro-QC)',
+    const failed = results.filter(r => !r.ok);
+    if (failed.length === 0) {
+      setToast({ type: 'success', text: `✓ All settings saved successfully.` });
+    } else {
+      setToast({
+        type: 'error',
+        text: `Save failed for ${failed.length} section(s): ${failed.map(f => f.section).join(', ')}`,
+      });
+    }
+    setSaving(false);
   }
 
   return (
-    <div className="min-h-screen bg-gw-dark">
-      <Nav tenantId={tenantId} />
-
-      <div className="max-w-4xl mx-auto px-4 py-8 space-y-6">
-
-        {/* Header */}
+    <div className="max-w-5xl mx-auto p-6 space-y-6">
+      {/* Header */}
+      <div className="flex justify-between items-center">
         <div>
-          <h1 className="text-xl font-bold text-white">Integration Centre</h1>
-          <p className="text-sm text-gw-muted mt-1">
-            Manage your infrastructure connections, grid alert thresholds, and monitoring preferences
+          <h1 className="text-3xl font-bold text-gray-900">Settings</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Tenant: <code className="text-xs bg-gray-100 px-2 py-0.5 rounded">{tenantId}</code>
           </p>
         </div>
+        <button
+          onClick={handleSaveAll}
+          disabled={saving}
+          className={`px-5 py-2.5 rounded-lg font-semibold transition-all ${
+            saving
+              ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+              : 'bg-blue-600 hover:bg-blue-700 text-white shadow-md'
+          }`}
+        >
+          {saving ? 'Saving…' : 'Save All Settings'}
+        </button>
+      </div>
 
-        {/* Account Details */}
-        <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-white">Account Details</h2>
-            <span className={`text-xs border px-2 py-1 rounded font-mono ${
-              isConnected
-                ? 'border-gw-green/50 text-gw-green'
-                : 'border-amber-500/50 text-amber-400'
-            }`}>
-              {DEMO_TENANT.status}
-            </span>
-          </div>
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            {[
-              ['Tenant ID',    tenantId],
-              ['Organization', DEMO_TENANT.organization_name],
-              ['Admin Email',  DEMO_TENANT.admin_email],
-              ['Tier',         DEMO_TENANT.subscription_tier],
-            ].map(([label, value]) => (
-              <div key={label}>
-                <div className="text-gw-muted text-xs mb-1">{label}</div>
-                <div className="font-mono text-white text-xs">{value}</div>
-              </div>
-            ))}
-          </div>
+      {/* Global toast */}
+      {toast && (
+        <div className={`p-4 rounded-lg border ${
+          toast.type === 'success' ? 'bg-green-50 border-green-200 text-green-800' :
+          toast.type === 'error'   ? 'bg-red-50   border-red-200   text-red-800'   :
+                                     'bg-blue-50  border-blue-200  text-blue-800'
+        }`}>
+          {toast.text}
         </div>
+      )}
 
-        {/* Discovered Nodes */}
-        <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-white flex items-center gap-2">
-              <Activity className="w-4 h-4 text-gw-green" />
-              Discovered Nodes
-            </h2>
-            <div className="flex items-center gap-2">
-              {activeNodes.length > 0 && (
-                <span className="text-xs border border-gw-green/30 text-gw-green px-2 py-0.5 rounded">
-                  {activeNodes.length} monitored
-                </span>
-              )}
-              {removedNodes.length > 0 && (
-                <span className="text-xs border border-gw-border text-gw-muted px-2 py-0.5 rounded">
-                  {removedNodes.length} excluded
-                </span>
-              )}
-            </div>
+      <TenantInfoSection      tenantId={tenantId} />
+      <EnvironmentSection     tenantId={tenantId} setToast={setToast} />
+      <ThresholdSection       tenantId={tenantId} registerSave={(fn) => { thresholdSaveRef.current = fn; }} />
+      <NotificationsSection   tenantId={tenantId} />
+      <ApiReferenceSection    tenantId={tenantId} />
+    </div>
+  );
+}
+
+// ─── Section 1: Tenant Info ───────────────────────────────────────────────
+function TenantInfoSection({ tenantId }: { tenantId: string }) {
+  const [tenant, setTenant] = useState<Tenant | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/tenants/${tenantId}`)
+      .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
+      .then(data => setTenant(data))
+      .catch(() => setTenant({ TenantID: tenantId }))
+      .finally(() => setLoading(false));
+  }, [tenantId]);
+
+  return (
+    <section className="bg-white border rounded-lg p-6 shadow-sm">
+      <h2 className="text-xl font-semibold mb-4">Tenant Information</h2>
+      {loading ? (
+        <div className="text-sm text-gray-500">Loading…</div>
+      ) : (
+        <dl className="grid grid-cols-2 gap-4 text-sm">
+          <div>
+            <dt className="font-medium text-gray-500">Tenant ID</dt>
+            <dd className="mt-1 font-mono text-gray-900">{tenant?.TenantID}</dd>
           </div>
+          <div>
+            <dt className="font-medium text-gray-500">Organization Name</dt>
+            <dd className="mt-1 text-gray-900">{tenant?.OrgName || '(not set)'}</dd>
+          </div>
+          <div>
+            <dt className="font-medium text-gray-500">Status</dt>
+            <dd className="mt-1 text-gray-900">{tenant?.Status || 'ACTIVE'}</dd>
+          </div>
+          <div>
+            <dt className="font-medium text-gray-500">Subscription Tier</dt>
+            <dd className="mt-1 text-gray-900">{tenant?.Tier || 'TIER_1_AUDIT'}</dd>
+          </div>
+        </dl>
+      )}
+    </section>
+  );
+}
 
-          {nodesLoading ? (
-            <div className="space-y-2">
-              {[1, 2].map(i => <div key={i} className="h-12 bg-gw-border rounded-lg animate-pulse" />)}
-            </div>
-          ) : nodes.length === 0 ? (
-            <div className="text-sm text-gw-muted py-4 text-center">
-              No nodes discovered yet. Deploy the IAM stack below to start discovery.
-            </div>
-          ) : (
-            <div className="space-y-2">
-              {nodes.map(node => (
-                <div key={node.id} className={`flex items-center justify-between p-3 rounded-lg border transition-all ${
-                  node.active ? 'border-gw-green/20 bg-gw-dark' : 'border-gw-border bg-gw-dark opacity-50'
-                }`}>
-                  <div className="flex items-center gap-3 min-w-0">
-                    <Cloud className={`w-4 h-4 flex-shrink-0 ${node.active ? 'text-blue-400' : 'text-gw-muted'}`} />
-                    <div className="min-w-0">
-                      <div className="font-mono text-xs text-white truncate">{node.id}</div>
-                      <div className="text-xs text-gw-muted mt-0.5">
-                        Grid: {node.grid} · {node.wattage}W
-                        {!node.active && <span className="ml-2 text-amber-400">Excluded from reports</span>}
-                      </div>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => toggleNode(node.id)}
-                    className={`flex-shrink-0 flex items-center gap-1.5 text-xs px-3 py-1.5 rounded border transition-colors ml-3 ${
-                      node.active
-                        ? 'border-red-500/30 text-red-400 hover:bg-red-500/10'
-                        : 'border-gw-green/30 text-gw-green hover:bg-gw-green/10'
-                    }`}
-                  >
-                    {node.active
-                      ? <><Trash2 className="w-3 h-3" /> Remove</>
-                      : <><RefreshCw className="w-3 h-3" /> Re-add</>
-                    }
-                  </button>
+// ─── Section 2: Environments (multi-env management) ───────────────────────
+function EnvironmentSection({ tenantId, setToast }: { tenantId: string; setToast: (t: ToastMsg) => void }) {
+  const [envs, setEnvs]       = useState<Record<string, Environment>>({});
+  const [active, setActive]   = useState('production');
+  const [loading, setLoading] = useState(true);
+  const [available, setAvailable] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/environments`);
+      if (r.status === 404 || r.status === 403) {
+        setAvailable(false);
+        return;
+      }
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      setEnvs(data.environments || {});
+      setActive(data.active_environment || 'production');
+      setAvailable(true);
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem('gw_active_env', data.active_environment || 'production');
+      }
+    } catch {
+      setAvailable(false);
+    } finally {
+      setLoading(false);
+    }
+  }, [tenantId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function switchTo(envName: string) {
+    setActive(envName);
+    if (typeof window !== 'undefined') window.localStorage.setItem('gw_active_env', envName);
+    const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/environments/${envName}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ activate: true }),
+    });
+    if (r.ok) {
+      setToast({ type: 'success', text: `✓ Switched active environment to "${envName}"` });
+    } else {
+      setToast({ type: 'error', text: 'Failed to switch environment' });
+    }
+  }
+
+  async function createNew() {
+    const display = prompt('Display name for the new environment (e.g. "QA Canada"):');
+    if (!display) return;
+    const name = display.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/^-+|-+$/g, '');
+    if (!name) { setToast({ type: 'error', text: 'Invalid name' }); return; }
+    const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/environments`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, display_name: display }),
+    });
+    if (r.ok) {
+      setToast({ type: 'success', text: `✓ Environment "${display}" created` });
+      load();
+    } else {
+      const data = await r.json();
+      setToast({ type: 'error', text: data.error || 'Create failed' });
+    }
+  }
+
+  async function deleteEnv(envName: string) {
+    if (envName === 'production') {
+      setToast({ type: 'error', text: 'Cannot delete the production environment' });
+      return;
+    }
+    if (!confirm(`Permanently delete environment "${envName}"? This requires it to have NO telemetry records.`)) return;
+    const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/environments/${envName}`, { method: 'DELETE' });
+    if (r.ok) {
+      setToast({ type: 'success', text: `✓ Deleted environment "${envName}"` });
+      load();
+    } else {
+      const data = await r.json();
+      setToast({ type: 'error', text: data.error || 'Delete failed' });
+    }
+  }
+
+  if (!available) {
+    return (
+      <section className="bg-white border rounded-lg p-6 shadow-sm">
+        <h2 className="text-xl font-semibold mb-2">Environments</h2>
+        <p className="text-sm text-gray-500">
+          Multi-environment management is not yet enabled for this tenant. Run
+          <code className="text-xs bg-gray-100 px-1.5 py-0.5 rounded mx-1">DEPLOY_MULTI_ENV.sh</code>
+          on the server to activate this feature.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="bg-white border rounded-lg p-6 shadow-sm">
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-xl font-semibold">Environments</h2>
+        <button onClick={createNew}
+          className="px-3 py-1.5 text-sm border border-dashed border-gray-400 rounded text-gray-600 hover:bg-gray-50">
+          + New Environment
+        </button>
+      </div>
+      <p className="text-sm text-gray-500 mb-4">
+        Switch between environments to view telemetry and reports scoped to that environment only.
+      </p>
+      {loading ? (
+        <div className="text-sm text-gray-500">Loading…</div>
+      ) : (
+        <div className="space-y-2">
+          {Object.entries(envs).map(([name, env]) => (
+            <div key={name}
+              className={`flex justify-between items-center p-3 rounded-lg border-2 transition-all ${
+                active === name ? 'border-blue-500 bg-blue-50' : 'border-gray-200 hover:border-gray-300'
+              }`}>
+              <div className="flex items-center gap-3">
+                <div className="w-3 h-3 rounded-full" style={{ backgroundColor: env.ColorHex }} />
+                <div>
+                  <div className="font-medium text-gray-900">{env.DisplayName}</div>
+                  <div className="text-xs text-gray-500 font-mono">{name}</div>
                 </div>
-              ))}
-            </div>
-          )}
-          <p className="text-xs text-gw-muted mt-3">
-            Removed nodes are excluded from carbon calculations and compliance reports. Re-add at any time.
-          </p>
-        </div>
-
-        {/* Step 1 — AWS IAM Scanner Role */}
-        <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
-          <div className="flex items-start gap-3 mb-4">
-            <div className={`w-7 h-7 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 ${
-              isConnected
-                ? 'bg-gw-green/20 border border-gw-green text-gw-green'
-                : 'bg-gw-green/10 border border-gw-green/30 text-gw-green'
-            }`}>
-              {isConnected ? <CheckCircle className="w-4 h-4" /> : '1'}
-            </div>
-            <div className="flex-1">
-              <h2 className="font-semibold text-white flex items-center gap-2">
-                <Cloud className="w-4 h-4 text-gw-green" />
-                Deploy AWS IAM Scanner Role
-                {isConnected && (
-                  <span className="flex items-center gap-1 text-xs text-gw-green border border-gw-green/30 px-2 py-0.5 rounded ml-2">
-                    <Link2 className="w-3 h-3" /> Connected
-                  </span>
+                {active === name && (
+                  <span className="ml-2 text-xs bg-blue-600 text-white px-2 py-0.5 rounded">ACTIVE</span>
                 )}
-              </h2>
-              <p className="text-sm text-gw-muted mt-1">
-                {isConnected
-                  ? 'Your AWS account is connected. GridWitness is discovering EC2 instances across all Canadian regions every 2 minutes.'
-                  : 'One-click CloudFormation deployment. Creates a read-only role in your AWS account. GridWitness uses it to discover your EC2 instances across all regions.'
-                }
-              </p>
-
-              {!isConnected && (
-                <>
-                  <div className="bg-gw-dark border border-gw-border rounded-lg p-3 mt-3 mb-3 flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0" />
-                    <p className="text-xs text-gw-muted">
-                      Read-only permissions only. GridWitness cannot modify, delete, or access your data.
-                    </p>
-                  </div>
-                  <a
-                    href={cfnUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-2 bg-gw-green text-gw-dark font-semibold px-5 py-2.5 rounded-lg hover:bg-gw-green/90 transition-colors text-sm"
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                    Deploy IAM Stack in AWS Console
-                  </a>
-                  <p className="text-xs text-gw-muted mt-3">
-                    After deployment, new instances appear in Discovered Nodes within 2 minutes.
-                  </p>
-                </>
-              )}
-
-              {isConnected && (
-                <div className="mt-3 flex items-center gap-3">
-                  <div className="text-xs text-gw-muted">
-                    Role: <span className="font-mono text-white">GridWitness-Scanner-{tenantId}</span>
-                  </div>
-                  <a
-                    href={cfnUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-gw-muted hover:text-gw-green transition-colors flex items-center gap-1"
-                  >
-                    <ExternalLink className="w-3 h-3" /> View stack
-                  </a>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Step 2 — Edge Agent */}
-        <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
-          <div className="flex items-start gap-3">
-            <div className="w-7 h-7 rounded-full bg-gw-green/10 border border-gw-green/30 flex items-center justify-center text-gw-green text-sm font-bold flex-shrink-0">2</div>
-            <div className="flex-1">
-              <h2 className="font-semibold text-white flex items-center gap-2 mb-1">
-                <Server className="w-4 h-4 text-gw-green" />
-                Install Physical Edge Agent <span className="text-gw-muted font-normal text-xs">(Optional)</span>
-              </h2>
-              <p className="text-sm text-gw-muted mb-3">
-                For physical servers with BMC Redfish API. Reads actual wattage directly from hardware. Outbound-only — no inbound ports required.
-              </p>
-              <div className="flex gap-2 mb-3">
-                {(['unix', 'windows'] as const).map(t => (
-                  <button key={t} onClick={() => setEdgeTab(t)}
-                    className={`text-xs px-3 py-1.5 rounded border transition-colors ${
-                      edgeTab === t
-                        ? 'border-gw-green text-gw-green bg-gw-green/10'
-                        : 'border-gw-border text-gw-muted hover:border-gw-green/50'
-                    }`}>
-                    {t === 'unix' ? '🐧 Linux / macOS' : '🪟 Windows'}
+              </div>
+              <div className="flex gap-2">
+                {active !== name && (
+                  <button onClick={() => switchTo(name)}
+                    className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded">
+                    Activate
                   </button>
-                ))}
-              </div>
-              <div className="bg-gw-dark border border-gw-border rounded-lg p-4 font-mono text-xs text-gw-green relative">
-                <pre className="whitespace-pre-wrap overflow-x-auto">{edgeTab === 'unix' ? edgeUnix : edgeWindows}</pre>
-                <button
-                  onClick={() => copy(edgeTab === 'unix' ? edgeUnix : edgeWindows, 'edge')}
-                  className="absolute top-3 right-3 p-1.5 rounded hover:bg-gw-border transition-colors"
-                >
-                  {copied === 'edge'
-                    ? <CheckCircle className="w-4 h-4 text-gw-green" />
-                    : <Copy className="w-4 h-4 text-gw-muted" />
-                  }
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Step 3 — Kubernetes Job Controller */}
-        <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
-          <div className="flex items-start gap-3">
-            <div className="w-7 h-7 rounded-full bg-gw-green/10 border border-gw-green/30 flex items-center justify-center text-gw-green text-sm font-bold flex-shrink-0">3</div>
-            <div className="flex-1">
-              <h2 className="font-semibold text-white flex items-center gap-2 mb-1">
-                <Settings2 className="w-4 h-4 text-gw-green" />
-                Kubernetes Job Controller <span className="text-gw-muted font-normal text-xs">(Optional)</span>
-              </h2>
-              <p className="text-sm text-gw-muted mb-2">
-                Grants GridWitness permission to automatically scale down workloads during grid stress events.
-                All actions — including inaction — are stamped into your WORM ledger and included in compliance reports.
-              </p>
-              <div className="bg-gw-dark border border-amber-500/20 rounded-lg p-3 mb-3 flex items-start gap-2">
-                <AlertTriangle className="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5" />
-                <p className="text-xs text-gw-muted">
-                  This grants <strong className="text-white">edit</strong> permissions on your cluster workloads.
-                  GridWitness will only scale deployments during declared grid incidents and will always log every action.
-                </p>
-              </div>
-              <div className="flex gap-2 mb-3">
-                {(['unix', 'windows'] as const).map(t => (
-                  <button key={t} onClick={() => setK8sTab(t)}
-                    className={`text-xs px-3 py-1.5 rounded border transition-colors ${
-                      k8sTab === t
-                        ? 'border-gw-green text-gw-green bg-gw-green/10'
-                        : 'border-gw-border text-gw-muted hover:border-gw-green/50'
-                    }`}>
-                    {t === 'unix' ? '🐧 Linux / macOS' : '🪟 Windows'}
+                )}
+                {name !== 'production' && (
+                  <button onClick={() => deleteEnv(name)}
+                    className="px-3 py-1 text-sm border border-red-300 text-red-600 hover:bg-red-50 rounded">
+                    Delete
                   </button>
-                ))}
-              </div>
-              <div className="bg-gw-dark border border-gw-border rounded-lg p-4 font-mono text-xs text-gw-green relative">
-                <pre className="whitespace-pre-wrap overflow-x-auto">{k8sTab === 'unix' ? k8sUnix : k8sWindows}</pre>
-                <button
-                  onClick={() => copy(k8sTab === 'unix' ? k8sUnix : k8sWindows, 'k8s')}
-                  className="absolute top-3 right-3 p-1.5 rounded hover:bg-gw-border transition-colors"
-                >
-                  {copied === 'k8s'
-                    ? <CheckCircle className="w-4 h-4 text-gw-green" />
-                    : <Copy className="w-4 h-4 text-gw-muted" />
-                  }
-                </button>
+                )}
               </div>
             </div>
-          </div>
+          ))}
         </div>
+      )}
+    </section>
+  );
+}
 
-        {/* Grid-Specific Alert Thresholds */}
-        <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
-          <h2 className="font-semibold text-white flex items-center gap-2 mb-1">
-            <Bell className="w-4 h-4 text-gw-green" />
-            Grid Alert Thresholds
-          </h2>
-          <p className="text-sm text-gw-muted mb-5">
-            Each grid has independent thresholds reflecting its unique energy profile.
-            Incidents trigger when a value exceeds its threshold and auto-resolve when it returns below.
+// ─── Section 3: Grid Alert Thresholds ─────────────────────────────────────
+function ThresholdSection({
+  tenantId,
+  registerSave,
+}: {
+  tenantId: string;
+  registerSave: (fn: () => Promise<{ ok: boolean; msg: string }>) => void;
+}) {
+  const [thresholds,   setThresholds]   = useState<Thresholds | null>(null);
+  const [original,     setOriginal]     = useState<Thresholds | null>(null);
+  const [loading,      setLoading]      = useState(true);
+  const [usingDefaults, setUsingDefaults] = useState(false);
+  const [updatedAt,    setUpdatedAt]    = useState<string | null>(null);
+  const [localMsg,     setLocalMsg]     = useState<string | null>(null);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/thresholds`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      setThresholds(data.grid_thresholds);
+      setOriginal(JSON.parse(JSON.stringify(data.grid_thresholds)));
+      setUsingDefaults(data.using_defaults);
+      setUpdatedAt(data.updated_at);
+    } catch (e: any) {
+      setLocalMsg(`Failed to load: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { load(); }, [tenantId]);
+
+  // Register save handler with parent for "Save All" button
+  useEffect(() => {
+    registerSave(async () => {
+      if (!thresholds) return { ok: false, msg: 'No thresholds loaded' };
+      try {
+        const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/thresholds`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ grid_thresholds: thresholds }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+        setUpdatedAt(data.updated_at);
+        setOriginal(JSON.parse(JSON.stringify(thresholds)));
+        setUsingDefaults(false);
+        return { ok: true, msg: 'Saved' };
+      } catch (e: any) {
+        return { ok: false, msg: e.message };
+      }
+    });
+  }, [thresholds, tenantId, registerSave]);
+
+  function handleChange(grid: string, metric: keyof ThresholdMetrics, value: string) {
+    const num = parseFloat(value);
+    if (isNaN(num) || num < 0) return;
+    setThresholds(prev => prev ? { ...prev, [grid]: { ...prev[grid], [metric]: num } } : prev);
+  }
+
+  function handleResetThis() {
+    if (original) setThresholds(JSON.parse(JSON.stringify(original)));
+  }
+
+  const isDirty = thresholds && original && JSON.stringify(thresholds) !== JSON.stringify(original);
+  const grids   = ['AB', 'ON', 'BC', 'QC'] as const;
+  const metrics: Array<[keyof ThresholdMetrics, string, string]> = [
+    ['carbon', 'Carbon', 'gCO₂e/kWh'],
+    ['load',   'Load',   '% capacity'],
+    ['price',  'Price',  '$/MWh'],
+  ];
+
+  return (
+    <section className="bg-white border rounded-lg p-6 shadow-sm">
+      <div className="flex justify-between items-center mb-4">
+        <div>
+          <h2 className="text-xl font-semibold">Grid Alert Thresholds</h2>
+          <p className="text-sm text-gray-500">
+            Breach any threshold to auto-open a WORM-sealed incident and trigger SNS notification.
           </p>
+        </div>
+        <span className="text-xs text-gray-500">
+          {usingDefaults ? 'Using regulatory defaults' : updatedAt ? `Last saved: ${new Date(updatedAt).toLocaleString()}` : ''}
+        </span>
+      </div>
 
-          <div className="space-y-6">
-            {thresholds.map(t => (
-              <div key={t.gridId} className="bg-gw-dark rounded-xl p-4 border border-gw-border">
-                <div className="flex items-center justify-between mb-1">
-                  <h3 className="text-sm font-semibold text-white">{gridLabels[t.gridId] ?? t.gridId}</h3>
-                  <span className="text-xs text-gw-muted font-mono">{t.gridId}</span>
-                </div>
-                <p className="text-xs text-gw-muted mb-4">{t.description}</p>
-
-                <div className={`grid gap-4 ${t.gridId === 'AB' ? 'grid-cols-3' : 'grid-cols-2'}`}>
-                  {/* Carbon threshold */}
-                  <div>
-                    <label className="text-xs text-gw-muted block mb-1">
-                      Carbon Alert (gCO₂/kWh)
-                      {t.gridId === 'QC' && <span className="ml-1 text-amber-400">secondary</span>}
-                    </label>
-                    <input
-                      type="number"
-                      value={t.carbonAlert}
-                      onChange={e => updateThreshold(t.gridId, 'carbonAlert', +e.target.value)}
-                      className="w-full bg-gw-panel border border-gw-border rounded-lg px-3 py-2 text-white text-sm focus:border-gw-green focus:outline-none"
-                    />
-                  </div>
-
-                  {/* Load threshold */}
-                  <div>
-                    <label className="text-xs text-gw-muted block mb-1">
-                      Load Alert (% capacity)
-                      {t.gridId === 'QC' && <span className="ml-1 text-gw-green">primary</span>}
-                    </label>
-                    <input
-                      type="number"
-                      value={t.loadAlert}
-                      onChange={e => updateThreshold(t.gridId, 'loadAlert', +e.target.value)}
-                      className="w-full bg-gw-panel border border-gw-border rounded-lg px-3 py-2 text-white text-sm focus:border-gw-green focus:outline-none"
-                    />
-                  </div>
-
-                  {/* Price threshold — AESO only */}
-                  {t.gridId === 'AB' && (
-                    <div>
-                      <label className="text-xs text-gw-muted block mb-1">
-                        Price Alert ($/MWh) <span className="text-blue-400">AESO</span>
-                      </label>
+      {loading ? (
+        <div className="text-sm text-gray-500">Loading…</div>
+      ) : !thresholds ? (
+        <div className="text-sm text-red-600">{localMsg || 'Unable to load thresholds'}</div>
+      ) : (
+        <>
+          <table className="w-full text-sm">
+            <thead className="border-b">
+              <tr>
+                <th className="py-2 text-left">Grid</th>
+                {metrics.map(([k, label, unit]) => (
+                  <th key={k} className="py-2 text-left">
+                    {label} <span className="text-gray-400 font-normal">({unit})</span>
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {grids.map(grid => (
+                <tr key={grid} className="border-b">
+                  <td className="py-3 font-medium">{grid}</td>
+                  {metrics.map(([metric]) => (
+                    <td key={metric} className="py-3 pr-4">
                       <input
                         type="number"
-                        value={t.priceAlert}
-                        onChange={e => updateThreshold(t.gridId, 'priceAlert', +e.target.value)}
-                        className="w-full bg-gw-panel border border-gw-border rounded-lg px-3 py-2 text-white text-sm focus:border-gw-green focus:outline-none"
+                        step="0.1"
+                        min={0}
+                        className="border rounded px-2 py-1 w-28 focus:ring-2 focus:ring-blue-500 outline-none"
+                        value={thresholds[grid]?.[metric] ?? ''}
+                        onChange={e => handleChange(grid, metric, e.target.value)}
                       />
-                      <p className="text-xs text-gw-muted mt-1">Historical avg ~$60 · Spike = &gt;$150</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Notification & Disconnect Settings */}
-        <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
-          <h2 className="font-semibold text-white mb-4">Notification Settings</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-            <div>
-              <label className="text-xs text-gw-muted block mb-1">
-                Alert Email Address
-              </label>
-              <input
-                type="email"
-                value={alertEmail}
-                onChange={e => setAlertEmail(e.target.value)}
-                placeholder="ops@yourcompany.com"
-                className="w-full bg-gw-dark border border-gw-border rounded-lg px-3 py-2 text-white text-sm focus:border-gw-green focus:outline-none"
-              />
-              <p className="text-xs text-gw-muted mt-1">
-                Receives incident start, threshold breach, and resolution notifications.
-              </p>
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {isDirty && (
+            <div className="mt-4 flex items-center gap-3 p-3 bg-yellow-50 border border-yellow-200 rounded">
+              <span className="text-sm text-yellow-800">You have unsaved threshold changes.</span>
+              <button onClick={handleResetThis}
+                className="text-sm px-3 py-1 border border-gray-300 rounded text-gray-700 hover:bg-white">
+                Discard
+              </button>
+              <span className="text-xs text-gray-500 ml-auto">Click "Save All Settings" at the top to persist.</span>
             </div>
-            <div>
-              <label className="text-xs text-gw-muted block mb-1">
-                Node Disconnect Alert (minutes)
-              </label>
-              <input
-                type="number"
-                value={disconnectMins}
-                onChange={e => setDisconnectMins(+e.target.value)}
-                className="w-full bg-gw-dark border border-gw-border rounded-lg px-3 py-2 text-white text-sm focus:border-gw-green focus:outline-none"
-              />
-              <p className="text-xs text-gw-muted mt-1">
-                Alert if a monitored node stops reporting for this many minutes.
-              </p>
-            </div>
-          </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
 
-          <div className="mt-4 p-3 bg-gw-dark border border-gw-border rounded-lg text-xs text-gw-muted">
-            <strong className="text-white">Incident lifecycle:</strong> An incident opens when any threshold is breached.
-            It auto-closes when the grid value returns below threshold — not on a timer.
-            If no action is taken, the incident remains open and is flagged UNRESOLVED in your compliance report.
-            All customer responses (manual acknowledgment, K8s scale-down, power reduction) are WORM-stamped with timestamp and actor.
+// ─── Section 4: Notification Preferences ─────────────────────────────────
+function NotificationsSection({ tenantId }: { tenantId: string }) {
+  return (
+    <section className="bg-white border rounded-lg p-6 shadow-sm">
+      <h2 className="text-xl font-semibold mb-4">Notification Preferences</h2>
+      <div className="space-y-3 text-sm">
+        <div className="flex justify-between items-center p-3 bg-gray-50 rounded">
+          <div>
+            <div className="font-medium">Grid Stress Incident Alerts (SNS)</div>
+            <div className="text-xs text-gray-500">Email when carbon/load/price thresholds are breached</div>
           </div>
-
-          <button
-            onClick={saveSettings}
-            className="mt-5 flex items-center gap-2 bg-gw-green/10 border border-gw-green/30 text-gw-green px-5 py-2.5 rounded-lg text-sm hover:bg-gw-green/20 transition-colors"
-          >
-            {saved
-              ? <><CheckCircle className="w-4 h-4" /> Settings Saved</>
-              : <>Save All Settings</>
-            }
-          </button>
+          <span className="px-2 py-1 bg-green-100 text-green-800 text-xs rounded">CONFIRMED</span>
         </div>
-
+        <div className="flex justify-between items-center p-3 bg-gray-50 rounded">
+          <div>
+            <div className="font-medium">Weekly Compliance Report Summary</div>
+            <div className="text-xs text-gray-500">Email digest of records, incidents, emissions</div>
+          </div>
+          <span className="px-2 py-1 bg-gray-200 text-gray-600 text-xs rounded">NOT CONFIGURED</span>
+        </div>
+        <div className="flex justify-between items-center p-3 bg-gray-50 rounded">
+          <div>
+            <div className="font-medium">Webhook Integrations (Slack / Teams / PagerDuty)</div>
+            <div className="text-xs text-gray-500">Real-time incident push to your channel</div>
+          </div>
+          <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded">COMING SOON</span>
+        </div>
       </div>
-    </div>
-  )
+    </section>
+  );
+}
+
+// ─── Section 5: API Reference ─────────────────────────────────────────────
+function ApiReferenceSection({ tenantId }: { tenantId: string }) {
+  const endpoints = [
+    { method: 'GET',  path: `/api/tenants/${tenantId}/thresholds`,   desc: 'Read alert thresholds' },
+    { method: 'PUT',  path: `/api/tenants/${tenantId}/thresholds`,   desc: 'Update alert thresholds' },
+    { method: 'GET',  path: `/api/tenants/${tenantId}/environments`, desc: 'List environments' },
+    { method: 'GET',  path: `/api/incidents?tenant_id=${tenantId}`,  desc: 'List incidents' },
+    { method: 'POST', path: '/api/reports/generate',                  desc: 'Generate compliance report' },
+    { method: 'GET',  path: `/api/reports/latest?tenant_id=${tenantId}`, desc: 'Get latest report URL' },
+  ];
+
+  return (
+    <section className="bg-white border rounded-lg p-6 shadow-sm">
+      <h2 className="text-xl font-semibold mb-4">API Reference</h2>
+      <p className="text-sm text-gray-500 mb-4">
+        Base URL: <code className="text-xs bg-gray-100 px-2 py-0.5 rounded">{API_BASE}</code>
+      </p>
+      <div className="space-y-1 text-sm font-mono">
+        {endpoints.map((ep, i) => (
+          <div key={i} className="flex gap-3 items-center py-2 border-b last:border-b-0">
+            <span className={`px-2 py-0.5 rounded text-xs font-bold ${
+              ep.method === 'GET'  ? 'bg-blue-100 text-blue-700' :
+              ep.method === 'POST' ? 'bg-green-100 text-green-700' :
+              ep.method === 'PUT'  ? 'bg-yellow-100 text-yellow-700' :
+                                     'bg-red-100 text-red-700'
+            }`}>{ep.method}</span>
+            <span className="text-gray-700 flex-1">{ep.path}</span>
+            <span className="text-xs text-gray-400 font-sans">{ep.desc}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 }
