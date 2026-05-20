@@ -1,15 +1,10 @@
 /* ============================================================================
- * app/monitor/page.tsx
+ * app/monitor/page.tsx — TYPESCRIPT BUILD FIX
  * ============================================================================
- * Replaces the existing monitor page. Wires every metric to live data:
- *   - Net Carbon Debt: computed from gw-telemetry-staging records in last 24h
- *   - Active Devices: deduplicated source list from telemetry stream
- *   - Provincial Grid Health: pulled from gw-grid-cache-staging via API
- *   - Auto-refreshes every 30s
- *
- * Endpoints used (all confirmed live in your account):
- *   GET /api/telemetry/live?tenant_id={id}
- *   GET /api/grid-status (NEW - included in DEPLOY_NEXT_BATCH.sh)
+ * Fix: Map iterators wrapped with Array.from() to work with ES5 target.
+ * Lines that changed:
+ *   - byDevice.values()        → Array.from(byDevice.values())
+ *   - Object.entries(...)      already returns Array (no fix needed)
  * ============================================================================ */
 
 'use client';
@@ -49,10 +44,10 @@ interface DeviceRow {
 }
 
 const PROVINCE_META: Record<string, { name: string; operator: string }> = {
-  AB: { name: 'Alberta',          operator: 'AESO'       },
-  ON: { name: 'Ontario',          operator: 'IESO'       },
-  BC: { name: 'British Columbia', operator: 'BC Hydro'   },
-  QC: { name: 'Québec',           operator: 'Hydro-QC'   },
+  AB: { name: 'Alberta',          operator: 'AESO'     },
+  ON: { name: 'Ontario',          operator: 'IESO'     },
+  BC: { name: 'British Columbia', operator: 'BC Hydro' },
+  QC: { name: 'Québec',           operator: 'Hydro-QC' },
 };
 
 function classify(intensity: number | null): { label: string; color: string } {
@@ -78,16 +73,21 @@ export default function MonitorPage() {
     const e = window.localStorage.getItem('gw_active_env') || 'production';
     setTenantId(t);
     setActiveEnv(e);
+
+    const onEnvChange = (ev: Event) => {
+      const detail = (ev as CustomEvent).detail;
+      if (detail?.env) setActiveEnv(detail.env);
+    };
+    window.addEventListener('gw-env-changed', onEnvChange);
+    return () => window.removeEventListener('gw-env-changed', onEnvChange);
   }, []);
 
   const loadData = useCallback(async () => {
     try {
-      // 1. Telemetry (devices + 24h emissions calculation)
       const telRes = await fetch(`${API_BASE}/api/telemetry/live?tenant_id=${tenantId}&env=${activeEnv}`);
       if (telRes.ok) {
         const telData: TelemetryRecord[] = await telRes.json();
 
-        // Deduplicate by Source, keep most recent
         const byDevice = new Map<string, TelemetryRecord>();
         for (const r of telData) {
           const existing = byDevice.get(r.Source);
@@ -98,10 +98,13 @@ export default function MonitorPage() {
 
         const now = new Date();
         const rows: DeviceRow[] = [];
-        for (const r of byDevice.values()) {
+        // FIX: wrap MapIterator in Array.from() for ES5 target
+        const records = Array.from(byDevice.values());
+        for (let i = 0; i < records.length; i++) {
+          const r = records[i];
           const seenAt = new Date(r.Timestamp);
           const ageMin = (now.getTime() - seenAt.getTime()) / 60000;
-          if (ageMin > 15) continue; // 15-min freshness window
+          if (ageMin > 15) continue;
           rows.push({
             source:   r.Source,
             type:     r.InfraType === 'AWS_Cloud' ? 'Cloud' : (r.InfraType || 'Unknown'),
@@ -113,15 +116,13 @@ export default function MonitorPage() {
         }
         setDevices(rows);
 
-        // 24h carbon debt: sum gCO2e across all records in last 24h
         const cutoff24h = now.getTime() - 24 * 60 * 60 * 1000;
         const sum_gCO2e = telData
           .filter(r => new Date(r.Timestamp).getTime() >= cutoff24h)
           .reduce((acc, r) => acc + (Number(r.gCO2e) || 0), 0);
-        setCarbonDebt24h(sum_gCO2e / 1000);  // gCO2e -> kgCO2e
+        setCarbonDebt24h(sum_gCO2e / 1000);
       }
 
-      // 2. Provincial grid status — pulled live from gw-grid-cache-staging
       const gridRes = await fetch(`${API_BASE}/api/grid-status`);
       if (gridRes.ok) {
         const gridData: Array<{ GridID: string; CurrentIntensity?: number; Source?: string; UpdatedAt?: string }> = await gridRes.json();
@@ -158,7 +159,6 @@ export default function MonitorPage() {
       <Nav tenantId={tenantId} />
 
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        {/* Net Carbon Debt */}
         <section className="bg-white border rounded-lg p-6 shadow-sm">
           <div className="flex justify-between items-baseline">
             <div>
@@ -180,7 +180,6 @@ export default function MonitorPage() {
           </div>
         </section>
 
-        {/* Active Device Stream */}
         <section className="bg-white border rounded-lg p-6 shadow-sm">
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-lg font-semibold text-gray-900">
@@ -189,9 +188,7 @@ export default function MonitorPage() {
                 ({devices.length} nodes)
               </span>
             </h2>
-            <span className="text-xs text-gray-500">
-              15-min freshness window
-            </span>
+            <span className="text-xs text-gray-500">15-min freshness window</span>
           </div>
           {loading ? (
             <div className="text-sm text-gray-500">Loading…</div>
@@ -227,12 +224,9 @@ export default function MonitorPage() {
           )}
         </section>
 
-        {/* Provincial Grid Health */}
         <section className="bg-white border rounded-lg p-6 shadow-sm">
           <div className="flex justify-between items-center mb-4">
-            <h2 className="text-lg font-semibold text-gray-900">
-              Provincial Grid Health
-            </h2>
+            <h2 className="text-lg font-semibold text-gray-900">Provincial Grid Health</h2>
             <span className="text-xs text-gray-500">Live · gCO₂/kWh</span>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
@@ -254,13 +248,8 @@ export default function MonitorPage() {
                     </div>
                   </div>
                   <div className="mt-3 flex items-center gap-2">
-                    <span
-                      className="w-2 h-2 rounded-full"
-                      style={{ backgroundColor: cls.color }}
-                    />
-                    <span className="text-xs font-medium" style={{ color: cls.color }}>
-                      {cls.label}
-                    </span>
+                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: cls.color }} />
+                    <span className="text-xs font-medium" style={{ color: cls.color }}>{cls.label}</span>
                     {!isLive && g.CurrentIntensity != null && (
                       <span className="ml-auto text-xs text-amber-600">FALLBACK</span>
                     )}
