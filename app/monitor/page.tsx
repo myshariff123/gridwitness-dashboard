@@ -1,10 +1,11 @@
 /* ============================================================================
- * app/monitor/page.tsx — TYPESCRIPT BUILD FIX
+ * app/monitor/page.tsx — SIMPLIFIED (no env filter)
  * ============================================================================
- * Fix: Map iterators wrapped with Array.from() to work with ES5 target.
- * Lines that changed:
- *   - byDevice.values()        → Array.from(byDevice.values())
- *   - Object.entries(...)      already returns Array (no fix needed)
+ * Changes from previous version:
+ *   - No environment filter on API calls
+ *   - Array.from() wrapper to fix ES5 MapIterator type error
+ *   - Cleaner empty-state when telemetry endpoint is unreachable
+ *   - Honest "FALLBACK" tag when grid intensity is from regulatory baseline
  * ============================================================================ */
 
 'use client';
@@ -22,7 +23,6 @@ interface TelemetryRecord {
   Actual_Wattage: number;
   InfraType?: string;
   gCO2e?: number;
-  Environment?: string;
 }
 
 interface GridStatus {
@@ -59,37 +59,30 @@ function classify(intensity: number | null): { label: string; color: string } {
 
 export default function MonitorPage() {
   const [tenantId, setTenantId] = useState('GW-NIMBL-AEB47A92');
-  const [activeEnv, setActiveEnv] = useState('production');
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [gridStatuses, setGridStatuses] = useState<GridStatus[]>([]);
   const [carbonDebt24h, setCarbonDebt24h] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
+  const [errMsg, setErrMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const url = new URLSearchParams(window.location.search);
     const t = url.get('tenant_id') || window.localStorage.getItem('gw_tenant_id') || 'GW-NIMBL-AEB47A92';
-    const e = window.localStorage.getItem('gw_active_env') || 'production';
     setTenantId(t);
-    setActiveEnv(e);
-
-    const onEnvChange = (ev: Event) => {
-      const detail = (ev as CustomEvent).detail;
-      if (detail?.env) setActiveEnv(detail.env);
-    };
-    window.addEventListener('gw-env-changed', onEnvChange);
-    return () => window.removeEventListener('gw-env-changed', onEnvChange);
   }, []);
 
   const loadData = useCallback(async () => {
+    let anyError = false;
     try {
-      const telRes = await fetch(`${API_BASE}/api/telemetry/live?tenant_id=${tenantId}&env=${activeEnv}`);
+      const telRes = await fetch(`${API_BASE}/api/telemetry/live?tenant_id=${tenantId}`);
       if (telRes.ok) {
         const telData: TelemetryRecord[] = await telRes.json();
 
         const byDevice = new Map<string, TelemetryRecord>();
-        for (const r of telData) {
+        for (let i = 0; i < telData.length; i++) {
+          const r = telData[i];
           const existing = byDevice.get(r.Source);
           if (!existing || new Date(r.Timestamp) > new Date(existing.Timestamp)) {
             byDevice.set(r.Source, r);
@@ -98,7 +91,6 @@ export default function MonitorPage() {
 
         const now = new Date();
         const rows: DeviceRow[] = [];
-        // FIX: wrap MapIterator in Array.from() for ES5 target
         const records = Array.from(byDevice.values());
         for (let i = 0; i < records.length; i++) {
           const r = records[i];
@@ -121,6 +113,8 @@ export default function MonitorPage() {
           .filter(r => new Date(r.Timestamp).getTime() >= cutoff24h)
           .reduce((acc, r) => acc + (Number(r.gCO2e) || 0), 0);
         setCarbonDebt24h(sum_gCO2e / 1000);
+      } else {
+        anyError = true;
       }
 
       const gridRes = await fetch(`${API_BASE}/api/grid-status`);
@@ -138,15 +132,19 @@ export default function MonitorPage() {
           };
         });
         setGridStatuses(statuses);
+      } else {
+        anyError = true;
       }
 
       setLastUpdate(new Date());
-    } catch (e) {
-      console.error('Monitor data load error:', e);
+      setErrMsg(anyError ? 'Some endpoints did not respond. Showing partial data.' : null);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : 'network error';
+      setErrMsg(`Failed to load: ${msg}`);
     } finally {
       setLoading(false);
     }
-  }, [tenantId, activeEnv]);
+  }, [tenantId]);
 
   useEffect(() => {
     loadData();
@@ -159,6 +157,13 @@ export default function MonitorPage() {
       <Nav tenantId={tenantId} />
 
       <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+
+        {errMsg && (
+          <div className="p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-800">
+            {errMsg}
+          </div>
+        )}
+
         <section className="bg-white border rounded-lg p-6 shadow-sm">
           <div className="flex justify-between items-baseline">
             <div>
@@ -170,7 +175,7 @@ export default function MonitorPage() {
                 <span className="text-base text-gray-500">kgCO₂e</span>
               </p>
               <p className="text-xs text-gray-400 mt-1">
-                Sum of all telemetry records in last 24h · Environment: {activeEnv}
+                Sum of all telemetry records in last 24h
               </p>
             </div>
             <div className="text-xs text-gray-500 text-right">
@@ -227,42 +232,46 @@ export default function MonitorPage() {
         <section className="bg-white border rounded-lg p-6 shadow-sm">
           <div className="flex justify-between items-center mb-4">
             <h2 className="text-lg font-semibold text-gray-900">Provincial Grid Health</h2>
-            <span className="text-xs text-gray-500">Live · gCO₂/kWh</span>
+            <span className="text-xs text-gray-500">gCO₂/kWh</span>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-            {gridStatuses.map(g => {
-              const cls = classify(g.CurrentIntensity);
-              const isLive = g.Source && g.Source !== 'FALLBACK_BASELINE' && g.Source !== 'fallback';
-              return (
-                <div key={g.GridID} className="border rounded-lg p-4 bg-gray-50">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <div className="text-xs text-gray-500 font-mono">{g.GridID}</div>
-                      <div className="font-semibold text-gray-900">{g.ProvinceName}</div>
-                      <div className="text-xs text-gray-400">{g.Operator}</div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-2xl font-bold text-gray-900">
-                        {g.CurrentIntensity != null ? g.CurrentIntensity.toFixed(0) : '—'}
+          {gridStatuses.length === 0 ? (
+            <div className="text-sm text-gray-500">Grid status not available.</div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+              {gridStatuses.map(g => {
+                const cls = classify(g.CurrentIntensity);
+                const isFallback = !g.Source || g.Source === 'FALLBACK_BASELINE' || g.Source === 'fallback';
+                return (
+                  <div key={g.GridID} className="border rounded-lg p-4 bg-gray-50">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <div className="text-xs text-gray-500 font-mono">{g.GridID}</div>
+                        <div className="font-semibold text-gray-900">{g.ProvinceName}</div>
+                        <div className="text-xs text-gray-400">{g.Operator}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-2xl font-bold text-gray-900">
+                          {g.CurrentIntensity != null ? g.CurrentIntensity.toFixed(0) : '—'}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <div className="mt-3 flex items-center gap-2">
-                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: cls.color }} />
-                    <span className="text-xs font-medium" style={{ color: cls.color }}>{cls.label}</span>
-                    {!isLive && g.CurrentIntensity != null && (
-                      <span className="ml-auto text-xs text-amber-600">FALLBACK</span>
+                    <div className="mt-3 flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: cls.color }} />
+                      <span className="text-xs font-medium" style={{ color: cls.color }}>{cls.label}</span>
+                      {isFallback && g.CurrentIntensity != null && (
+                        <span className="ml-auto text-xs text-amber-600 font-medium">FALLBACK</span>
+                      )}
+                    </div>
+                    {g.UpdatedAt && (
+                      <div className="mt-1 text-xs text-gray-400">
+                        Updated: {new Date(g.UpdatedAt).toLocaleTimeString()}
+                      </div>
                     )}
                   </div>
-                  {g.UpdatedAt && (
-                    <div className="mt-1 text-xs text-gray-400">
-                      Updated: {new Date(g.UpdatedAt).toLocaleTimeString()}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
           <p className="mt-4 text-xs text-gray-500">
             Optimal: &lt;100 · Warning: 100–300 · Critical: &gt;300 gCO₂/kWh (global standard) ·
             Incident thresholds are configured per-grid in Settings.
