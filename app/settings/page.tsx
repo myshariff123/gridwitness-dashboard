@@ -1,19 +1,18 @@
 /* ============================================================================
- * app/settings/page.tsx — COMPLETE REWRITE (May 19, 2026)
+ * app/settings/page.tsx — SIMPLIFIED (May 20, 2026)
  * ============================================================================
- * Matches the layout of /monitor, /incidents, /compliance pages:
- *   - <Nav /> at the top (consistent navigation, same env badge)
- *   - Same background, same content max-width, same card style
+ * Environment switcher REMOVED per user request.
  *
  * Sections:
- *   1. Tenant Info
- *   2. Environments  (list, switch, create, delete)
- *   3. Device Assignment  (assign each device to an environment)
- *   4. Grid Alert Thresholds  (with working save)
- *   5. AWS Auto-Discovery Integration  (CloudFormation quick-link flow)
- *   6. Agent Installation Scripts  (Windows PS / Linux bash / K8s Helm)
- *   7. Notification Preferences
- *   8. API Reference
+ *   1. Tenant Information
+ *   2. Grid Alert Thresholds  (save works)
+ *   3. AWS Auto-Discovery Integration  (CloudFormation flow)
+ *   4. Agent Installation Scripts  (Windows / Linux / Docker / K8s)
+ *   5. Notification Preferences
+ *   6. API Reference
+ *
+ * Matches the layout of /monitor, /incidents, /compliance — same Nav at top,
+ * same f9fafb background, same max-w-7xl content width, same card styling.
  * ============================================================================ */
 
 'use client';
@@ -21,13 +20,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Nav from '@/components/Nav';
 
-const API_BASE = 'https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com';
+const API_BASE   = 'https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com';
+// UPDATE this constant to whichever URL VERIFY_AND_FINALIZE.sh reported as accepting telemetry.
+const INGEST_URL = 'https://cxdp3mup50.execute-api.ca-central-1.amazonaws.com/live/telemetry';
 
 type ThresholdMetrics = { carbon: number; load: number; price: number };
 type Thresholds       = Record<string, ThresholdMetrics>;
-type Environment      = { DisplayName: string; ColorHex: string; IsDefault: boolean; CreatedAt: string };
 type Tenant           = { TenantID: string; OrgName?: string; Status?: string; Tier?: string };
-type Device           = { device_id: string; grid: string; infra_type: string; last_seen: string; environment: string; explicitly_assigned?: boolean };
 type AwsIntegration   = { status: string; role_arn?: string; connected_at?: string; cloudformation_url?: string };
 type ToastType        = 'success' | 'error' | 'info';
 type ToastMsg         = { type: ToastType; text: string } | null;
@@ -62,7 +61,7 @@ export default function SettingsPage() {
     }
     const failed = results.filter(r => !r.ok);
     if (failed.length === 0) {
-      setToast({ type: 'success', text: `✓ All settings saved successfully.` });
+      setToast({ type: 'success', text: '✓ All settings saved successfully.' });
     } else {
       setToast({ type: 'error', text: `Save failed: ${failed.map(f => `${f.section} (${f.msg})`).join('; ')}` });
     }
@@ -100,8 +99,6 @@ export default function SettingsPage() {
         )}
 
         <TenantInfoSection tenantId={tenantId} />
-        <EnvironmentSection tenantId={tenantId} setToast={setToast} />
-        <DeviceAssignmentSection tenantId={tenantId} setToast={setToast} />
         <ThresholdSection tenantId={tenantId} registerSave={registerThresholdSave} />
         <AwsIntegrationSection tenantId={tenantId} setToast={setToast} />
         <AgentScriptsSection tenantId={tenantId} />
@@ -129,232 +126,6 @@ function TenantInfoSection({ tenantId }: { tenantId: string }) {
         <div><dt className="font-medium text-gray-500">Status</dt><dd className="mt-1 text-gray-900">{tenant?.Status || 'ACTIVE'}</dd></div>
         <div><dt className="font-medium text-gray-500">Tier</dt><dd className="mt-1 text-gray-900">{tenant?.Tier || 'TIER_1_AUDIT'}</dd></div>
       </dl>
-    </section>
-  );
-}
-
-function EnvironmentSection({ tenantId, setToast }: { tenantId: string; setToast: (t: ToastMsg) => void }) {
-  const [envs, setEnvs] = useState<Record<string, Environment>>({});
-  const [active, setActive] = useState('production');
-  const [available, setAvailable] = useState(true);
-  const [busy, setBusy] = useState(false);
-
-  const load = useCallback(async () => {
-    try {
-      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/environments`);
-      if (r.status === 404 || r.status === 403) { setAvailable(false); return; }
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const data = await r.json();
-      setEnvs(data.environments || {});
-      setActive(data.active_environment || 'production');
-      setAvailable(true);
-    } catch { setAvailable(false); }
-  }, [tenantId]);
-
-  useEffect(() => { load(); }, [load]);
-
-  async function switchTo(envName: string) {
-    setBusy(true);
-    setActive(envName);
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('gw_active_env', envName);
-      window.dispatchEvent(new CustomEvent('gw-env-changed', { detail: { env: envName } }));
-    }
-    const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/environments/${envName}`, {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ activate: true }),
-    });
-    setBusy(false);
-    if (r.ok) setToast({ type: 'success', text: `✓ Switched to "${envName}"` });
-    else setToast({ type: 'error', text: 'Switch failed' });
-  }
-
-  async function createNew() {
-    const display = prompt('New environment display name (e.g. "Staging"):');
-    if (!display) return;
-    const name = display.toLowerCase().replace(/[^a-z0-9_-]/g, '-').replace(/^-+|-+$/g, '');
-    if (!name) return;
-    setBusy(true);
-    const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/environments`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, display_name: display }),
-    });
-    setBusy(false);
-    if (r.ok) {
-      setToast({ type: 'success', text: `✓ Created "${display}"` });
-      load();
-    } else {
-      const data = await r.json().catch(() => ({}));
-      setToast({ type: 'error', text: data.error || 'Create failed' });
-    }
-  }
-
-  async function deleteEnv(envName: string) {
-    if (envName === 'production') {
-      setToast({ type: 'error', text: 'Cannot delete production' });
-      return;
-    }
-    if (!confirm(`Delete environment "${envName}"? Requires NO telemetry records.`)) return;
-    setBusy(true);
-    try {
-      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/environments/${envName}`, { method: 'DELETE' });
-      if (r.ok) {
-        setToast({ type: 'success', text: `✓ Deleted "${envName}"` });
-        load();
-      } else {
-        const data = await r.json().catch(() => ({}));
-        setToast({ type: 'error', text: data.error || `Delete failed (HTTP ${r.status})` });
-      }
-    } catch (e: any) {
-      setToast({ type: 'error', text: `Delete error: ${e.message}` });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (!available) return (
-    <section className="bg-white border rounded-lg p-6 shadow-sm">
-      <h2 className="text-xl font-semibold mb-2 text-gray-900">Environments</h2>
-      <p className="text-sm text-gray-500">
-        Multi-environment management not enabled. Run <code className="text-xs bg-gray-100 px-1.5 py-0.5 rounded">DEPLOY_MULTI_ENV.sh</code> on the server.
-      </p>
-    </section>
-  );
-
-  return (
-    <section className="bg-white border rounded-lg p-6 shadow-sm">
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-xl font-semibold text-gray-900">Environments</h2>
-        <button onClick={createNew} disabled={busy} className="px-3 py-1.5 text-sm border border-dashed border-gray-400 rounded text-gray-600 hover:bg-gray-50 disabled:opacity-50">+ New Environment</button>
-      </div>
-      <p className="text-sm text-gray-500 mb-4">Switch between environments to view scoped telemetry and reports.</p>
-      <div className="space-y-2">
-        {Object.entries(envs).map(([name, env]) => (
-          <div key={name} className={`flex justify-between items-center p-3 rounded-lg border-2 ${active === name ? 'border-blue-500 bg-blue-50' : 'border-gray-200'}`}>
-            <div className="flex items-center gap-3">
-              <div className="w-3 h-3 rounded-full" style={{ backgroundColor: env.ColorHex }} />
-              <div>
-                <div className="font-medium text-gray-900">{env.DisplayName}</div>
-                <div className="text-xs text-gray-500 font-mono">{name}</div>
-              </div>
-              {active === name && (<span className="ml-2 text-xs bg-blue-600 text-white px-2 py-0.5 rounded">ACTIVE</span>)}
-            </div>
-            <div className="flex gap-2">
-              {active !== name && (
-                <button onClick={() => switchTo(name)} disabled={busy} className="px-3 py-1 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50">Activate</button>
-              )}
-              {name !== 'production' && (
-                <button onClick={() => deleteEnv(name)} disabled={busy} className="px-3 py-1 text-sm border border-red-300 text-red-600 hover:bg-red-50 rounded disabled:opacity-50">Delete</button>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function DeviceAssignmentSection({ tenantId, setToast }: { tenantId: string; setToast: (t: ToastMsg) => void }) {
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [envs, setEnvs] = useState<Record<string, Environment>>({});
-  const [loading, setLoading] = useState(true);
-  const [available, setAvailable] = useState(true);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const [dRes, eRes] = await Promise.all([
-        fetch(`${API_BASE}/api/tenants/${tenantId}/devices`),
-        fetch(`${API_BASE}/api/tenants/${tenantId}/environments`),
-      ]);
-      if (dRes.status === 404 || dRes.status === 403) { setAvailable(false); setLoading(false); return; }
-      if (dRes.ok) {
-        const d = await dRes.json();
-        setDevices(d.devices || []);
-      }
-      if (eRes.ok) {
-        const e = await eRes.json();
-        setEnvs(e.environments || {});
-      }
-    } catch { setAvailable(false); }
-    setLoading(false);
-  }, [tenantId]);
-
-  useEffect(() => { load(); }, [load]);
-
-  async function reassignDevice(deviceId: string, newEnv: string) {
-    const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/devices/${deviceId}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ environment: newEnv }),
-    });
-    if (r.ok) {
-      setToast({ type: 'success', text: `✓ Device assigned to ${newEnv}` });
-      setDevices(prev => prev.map(d => d.device_id === deviceId ? { ...d, environment: newEnv, explicitly_assigned: true } : d));
-    } else {
-      const data = await r.json().catch(() => ({}));
-      setToast({ type: 'error', text: data.error || 'Assignment failed' });
-    }
-  }
-
-  if (!available) return (
-    <section className="bg-white border rounded-lg p-6 shadow-sm">
-      <h2 className="text-xl font-semibold mb-2 text-gray-900">Device Assignment</h2>
-      <p className="text-sm text-gray-500">
-        Per-device environment assignment requires running <code className="text-xs bg-gray-100 px-1.5 py-0.5 rounded">DEPLOY_SPRINT_FINAL.sh</code> on the server.
-      </p>
-    </section>
-  );
-
-  return (
-    <section className="bg-white border rounded-lg p-6 shadow-sm">
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="text-xl font-semibold text-gray-900">Device Assignment</h2>
-        <span className="text-xs text-gray-500">{devices.length} devices</span>
-      </div>
-      <p className="text-sm text-gray-500 mb-4">
-        Map each monitored device to a specific environment. Newly discovered devices default to "production" until you assign them.
-      </p>
-      {loading ? (
-        <div className="text-sm text-gray-500">Loading devices…</div>
-      ) : devices.length === 0 ? (
-        <div className="text-sm text-gray-500">No devices discovered yet. Once agents start reporting, they'll appear here.</div>
-      ) : (
-        <table className="w-full text-sm">
-          <thead className="border-b">
-            <tr>
-              <th className="py-2 text-left text-gray-700">Device ID</th>
-              <th className="py-2 text-left text-gray-700">Grid</th>
-              <th className="py-2 text-left text-gray-700">Type</th>
-              <th className="py-2 text-left text-gray-700">Last Seen</th>
-              <th className="py-2 text-left text-gray-700">Environment</th>
-            </tr>
-          </thead>
-          <tbody>
-            {devices.map(d => (
-              <tr key={d.device_id} className="border-b">
-                <td className="py-3 font-mono text-xs text-gray-900">{d.device_id}</td>
-                <td className="py-3 text-gray-700">{d.grid}</td>
-                <td className="py-3 text-gray-700">{d.infra_type}</td>
-                <td className="py-3 text-gray-500 text-xs">{d.last_seen ? new Date(d.last_seen).toLocaleString() : '—'}</td>
-                <td className="py-3">
-                  <select
-                    value={d.environment}
-                    onChange={(e) => reassignDevice(d.device_id, e.target.value)}
-                    className="border border-gray-300 rounded px-2 py-1 text-sm text-gray-900"
-                  >
-                    {Object.entries(envs).map(([name, env]) => (
-                      <option key={name} value={name}>{env.DisplayName}</option>
-                    ))}
-                  </select>
-                  {d.explicitly_assigned && (
-                    <span className="ml-2 text-xs text-green-700">✓ explicit</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
     </section>
   );
 }
@@ -502,7 +273,7 @@ function AwsIntegrationSection({ tenantId, setToast }: { tenantId: string; setTo
     setBusy(false);
     const data = await r.json().catch(() => ({}));
     if (r.ok) {
-      setToast({ type: 'success', text: '✓ AWS integration verified and active' });
+      setToast({ type: 'success', text: '✓ AWS integration verified' });
       setShowSubmit(false);
       setRoleArn('');
       load();
@@ -512,7 +283,7 @@ function AwsIntegrationSection({ tenantId, setToast }: { tenantId: string; setTo
   }
 
   async function revoke() {
-    if (!confirm('Revoke AWS integration? GridWitness will stop discovering new instances.')) return;
+    if (!confirm('Revoke AWS integration?')) return;
     setBusy(true);
     const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/aws`, { method: 'DELETE' });
     setBusy(false);
@@ -525,9 +296,7 @@ function AwsIntegrationSection({ tenantId, setToast }: { tenantId: string; setTo
   if (!available) return (
     <section className="bg-white border rounded-lg p-6 shadow-sm">
       <h2 className="text-xl font-semibold mb-2 text-gray-900">AWS Auto-Discovery Integration</h2>
-      <p className="text-sm text-gray-500">
-        Run <code className="text-xs bg-gray-100 px-1.5 py-0.5 rounded">DEPLOY_SPRINT_FINAL.sh</code> to enable this feature.
-      </p>
+      <p className="text-sm text-gray-500">AWS integration backend not deployed.</p>
     </section>
   );
 
@@ -537,15 +306,14 @@ function AwsIntegrationSection({ tenantId, setToast }: { tenantId: string; setTo
     <section className="bg-white border rounded-lg p-6 shadow-sm">
       <h2 className="text-xl font-semibold mb-2 text-gray-900">AWS Auto-Discovery Integration</h2>
       <p className="text-sm text-gray-500 mb-4">
-        Securely grant GridWitness read-only access to your AWS account to automatically discover and monitor EC2 instances.
+        Securely grant GridWitness read-only access to your AWS account.
       </p>
 
       {isActive ? (
         <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
           <div className="flex justify-between items-start">
             <div>
-              <div className="font-semibold text-green-800">🟢 AWS Integration Active</div>
-              <div className="text-sm text-green-700 mt-1">Cross-account role attached and verified.</div>
+              <div className="font-semibold text-green-800">🟢 Active</div>
               <div className="text-xs text-green-600 mt-2 font-mono">{integration?.role_arn}</div>
               {integration?.connected_at && (
                 <div className="text-xs text-green-600 mt-1">Connected: {new Date(integration.connected_at).toLocaleString()}</div>
@@ -558,10 +326,10 @@ function AwsIntegrationSection({ tenantId, setToast }: { tenantId: string; setTo
         <div className="p-4 bg-gray-50 border rounded-lg">
           <div className="font-semibold text-gray-800 mb-3">⚪ Not Connected</div>
           <ol className="text-sm text-gray-700 space-y-2 mb-4 list-decimal pl-5">
-            <li>Click the button below to launch CloudFormation in your AWS Console</li>
-            <li>The template creates a read-only IAM role with external-id <code className="text-xs bg-white px-1 rounded">gridwitness-{tenantId}</code></li>
-            <li>Once the stack is CREATE_COMPLETE, copy the <strong>RoleArn</strong> output</li>
-            <li>Paste it below and click Verify</li>
+            <li>Click the button to launch CloudFormation in your AWS Console</li>
+            <li>Stack creates a read-only IAM role with external-id <code className="text-xs bg-white px-1 rounded">gridwitness-{tenantId}</code></li>
+            <li>Copy the <strong>RoleArn</strong> output from the stack</li>
+            <li>Paste below and click Verify</li>
           </ol>
           <div className="flex gap-3 mb-3">
             {integration?.cloudformation_url && (
@@ -594,56 +362,16 @@ function AwsIntegrationSection({ tenantId, setToast }: { tenantId: string; setTo
   );
 }
 
-/* ============================================================================
- * app/settings/page.tsx — PATCH FOR AgentScriptsSection ONLY
- * ============================================================================
- * Apply this CHANGE to your existing app/settings/page.tsx:
- *
- * Replace the entire AgentScriptsSection function with the version below.
- * Everything else in app/settings/page.tsx stays as is.
- *
- * Changes:
- *   1. INGEST_URL constant at top — set this to the URL VERIFY_AND_FINALIZE.sh
- *      identified as accepting telemetry. Default kept as cxdp3mup50/live/telemetry
- *      since that matches your earlier fulfillment HTML.
- *   2. K8s script no longer references the imaginary 'gridwitness/green-scheduler'
- *      Helm repo. Instead it generates a complete kubectl apply manifest
- *      (DaemonSet + ConfigMap + Secret) that deploys directly.
- *   3. Added a fourth tab: Docker, for simple container-only deployments.
- * ============================================================================ */
-
-// ─── 6. Agent Installation Scripts (REPLACE EXISTING) ─────────────────────
-// IMPORTANT: Update INGEST_URL below to the URL identified by VERIFY_AND_FINALIZE.sh
 function AgentScriptsSection({ tenantId }: { tenantId: string }) {
-  // ────────────────────────────────────────────────────────────────────────
-  // Update INGEST_URL to whichever URL passed verification in your account.
-  // Most likely your existing cxdp3mup50 telemetry endpoint.
-  // ────────────────────────────────────────────────────────────────────────
-  const INGEST_URL = 'https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com/api/telemetry/live';
-
   const [tab, setTab] = useState<'windows' | 'linux' | 'docker' | 'k8s'>('windows');
-  const [activeEnv, setActiveEnv] = useState('production');
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const stored = window.localStorage.getItem('gw_active_env');
-    if (stored) setActiveEnv(stored);
-    const onChange = (e: Event) => {
-      const detail = (e as CustomEvent).detail;
-      if (detail?.env) setActiveEnv(detail.env);
-    };
-    window.addEventListener('gw-env-changed', onChange);
-    return () => window.removeEventListener('gw-env-changed', onChange);
-  }, []);
-
-  const psScript = `# GridWitness Agent — Windows PowerShell (env: ${activeEnv})
+  const psScript = `# GridWitness Agent — Windows PowerShell
 $JobName = "GridWitnessAgent_${tenantId}"
 Get-Job -Name $JobName -ErrorAction SilentlyContinue | Stop-Job -PassThru | Remove-Job
 Start-Job -Name $JobName -ScriptBlock {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $TenantID = "${tenantId}"
-    $Environment = "${activeEnv}"
     $ApiUrl = "${INGEST_URL}"
     try { $Geo = Invoke-RestMethod -Uri "http://ip-api.com/json" -UseBasicParsing; $Region = $Geo.regionName } catch { $Region = "Alberta" }
     $GridID = "Unknown"
@@ -660,21 +388,19 @@ Start-Job -Name $JobName -ScriptBlock {
             $RealWattage = [math]::Round(35 + ($Load * 1.2))
             $Payload = @{
                 TenantID = $TenantID; Source = $env:COMPUTERNAME
-                Actual_Wattage = $RealWattage; InfraType = $InfraType
-                GridID = $GridID; Environment = $Environment
+                Actual_Wattage = $RealWattage; InfraType = $InfraType; GridID = $GridID
             } | ConvertTo-Json -Compress
             Invoke-RestMethod -Uri $ApiUrl -Method Post -Body $Payload -ContentType "application/json"
         } catch {}
         Start-Sleep -Seconds 300
     }
 } | Out-Null
-Write-Host "GridWitness Agent attached for ${tenantId} (env: ${activeEnv})." -ForegroundColor Green`;
+Write-Host "GridWitness Agent attached for ${tenantId}." -ForegroundColor Green`;
 
   const bashScript = `#!/bin/bash
-# GridWitness Agent — Linux/Unix (env: ${activeEnv})
+# GridWitness Agent — Linux/Unix
 cat << 'EOF' > /tmp/gw_agent.sh
 TENANT_ID="${tenantId}"
-ENVIRONMENT="${activeEnv}"
 API_URL="${INGEST_URL}"
 REGION=$(curl -s http://ip-api.com/json | grep -oP '"regionName":"\\K[^"]+')
 [[ -z "$REGION" ]] && REGION="Alberta"
@@ -690,40 +416,21 @@ VENDOR=$(cat /sys/class/dmi/id/sys_vendor 2>/dev/null)
 while true; do
     LOAD=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\\([0-9.]*\\)%* id.*/\\1/" | awk '{print 100 - $1}')
     WATT=$(echo "35 + ($LOAD * 1.2)" | bc | awk '{print int($1+0.5)}')
-    PAYLOAD="{\\"TenantID\\":\\"$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":$WATT,\\"InfraType\\":\\"$INFRA\\",\\"GridID\\":\\"$GRID\\",\\"Environment\\":\\"$ENVIRONMENT\\"}"
+    PAYLOAD="{\\"TenantID\\":\\"$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":$WATT,\\"InfraType\\":\\"$INFRA\\",\\"GridID\\":\\"$GRID\\"}"
     curl -s -X POST $API_URL -H "Content-Type: application/json" -d "$PAYLOAD" > /dev/null 2>&1
     sleep 300
 done
 EOF
 chmod +x /tmp/gw_agent.sh
 nohup /tmp/gw_agent.sh > /dev/null 2>&1 &
-echo "GridWitness Agent attached for ${tenantId} (env: ${activeEnv})."
+echo "GridWitness Agent attached for ${tenantId}."`;
 
-# OPTIONAL: install as systemd service for survival across reboots
-sudo tee /etc/systemd/system/gridwitness-agent.service << 'EOF' > /dev/null
-[Unit]
-Description=GridWitness Telemetry Agent
-After=network.target
-[Service]
-Type=simple
-ExecStart=/tmp/gw_agent.sh
-Restart=always
-RestartSec=10
-[Install]
-WantedBy=multi-user.target
-EOF
-sudo systemctl daemon-reload && sudo systemctl enable --now gridwitness-agent.service`;
-
-  const dockerScript = `# GridWitness Agent — Docker (env: ${activeEnv})
-# Replace REGISTRY with your container registry; the image below is a public
-# alpine + curl + bash image that runs the agent loop.
-
+  const dockerScript = `# GridWitness Agent — Docker
 docker run -d \\
-  --name gridwitness-agent-${activeEnv} \\
+  --name gridwitness-agent \\
   --restart unless-stopped \\
   --network host \\
   -e GW_TENANT_ID=${tenantId} \\
-  -e GW_ENVIRONMENT=${activeEnv} \\
   -e GW_API_URL=${INGEST_URL} \\
   -e GW_POLL_SECONDS=300 \\
   alpine:3.19 sh -c '
@@ -733,18 +440,12 @@ docker run -d \\
       WATT=$(echo "35 + (\\$LOAD * 1.2)" | bc | awk "{print int(\\$1+0.5)}")
       curl -s -X POST $GW_API_URL \\
         -H "Content-Type: application/json" \\
-        -d "{\\"TenantID\\":\\"$GW_TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":$WATT,\\"InfraType\\":\\"Container\\",\\"GridID\\":\\"AB\\",\\"Environment\\":\\"$GW_ENVIRONMENT\\"}" > /dev/null
+        -d "{\\"TenantID\\":\\"$GW_TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":$WATT,\\"InfraType\\":\\"Container\\",\\"GridID\\":\\"AB\\"}" > /dev/null
       sleep $GW_POLL_SECONDS
     done
-  '
+  '`;
 
-# Verify it's running
-docker logs gridwitness-agent-${activeEnv} --tail 5`;
-
-  const k8sScript = `# GridWitness Agent — Kubernetes DaemonSet (env: ${activeEnv})
-# One pod per node. No Helm chart required. Apply with:
-#   kubectl apply -f gridwitness-agent.yaml
-
+  const k8sScript = `# GridWitness Agent — Kubernetes DaemonSet
 cat << 'EOF' > gridwitness-agent.yaml
 apiVersion: v1
 kind: Namespace
@@ -757,9 +458,8 @@ metadata:
   name: gridwitness-config
   namespace: gridwitness
 data:
-  GW_TENANT_ID:    "${tenantId}"
-  GW_ENVIRONMENT:  "${activeEnv}"
-  GW_API_URL:      "${INGEST_URL}"
+  GW_TENANT_ID: "${tenantId}"
+  GW_API_URL:   "${INGEST_URL}"
   GW_POLL_SECONDS: "300"
 ---
 apiVersion: apps/v1
@@ -767,25 +467,15 @@ kind: DaemonSet
 metadata:
   name: gridwitness-agent
   namespace: gridwitness
-  labels:
-    app.kubernetes.io/name: gridwitness-agent
 spec:
   selector:
     matchLabels:
-      app.kubernetes.io/name: gridwitness-agent
+      app: gridwitness-agent
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: gridwitness-agent
+        app: gridwitness-agent
     spec:
-      hostNetwork: false
-      tolerations:
-        - key: node-role.kubernetes.io/control-plane
-          operator: Exists
-          effect: NoSchedule
-        - key: node-role.kubernetes.io/master
-          operator: Exists
-          effect: NoSchedule
       containers:
         - name: agent
           image: alpine:3.19
@@ -797,13 +487,6 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: spec.nodeName
-          resources:
-            requests:
-              cpu:    "10m"
-              memory: "16Mi"
-            limits:
-              cpu:    "50m"
-              memory: "64Mi"
           command: ["/bin/sh", "-c"]
           args:
             - |
@@ -811,20 +494,13 @@ spec:
               while true; do
                 LOAD=\$(top -bn1 | head -3 | awk '/CPU:/ {print int(100-\$8)}' || echo 25)
                 WATT=\$(echo "35 + (\$LOAD * 1.2)" | bc | awk '{print int(\$1+0.5)}')
-                PAYLOAD="{\\"TenantID\\":\\"\$GW_TENANT_ID\\",\\"Source\\":\\"\$NODE_NAME\\",\\"Actual_Wattage\\":\$WATT,\\"InfraType\\":\\"Kubernetes\\",\\"GridID\\":\\"AB\\",\\"Environment\\":\\"\$GW_ENVIRONMENT\\"}"
                 curl -s -X POST "\$GW_API_URL" \\
                   -H "Content-Type: application/json" \\
-                  -d "\$PAYLOAD" > /dev/null 2>&1 || true
+                  -d "{\\"TenantID\\":\\"\$GW_TENANT_ID\\",\\"Source\\":\\"\$NODE_NAME\\",\\"Actual_Wattage\\":\$WATT,\\"InfraType\\":\\"Kubernetes\\",\\"GridID\\":\\"AB\\"}" > /dev/null 2>&1 || true
                 sleep \$GW_POLL_SECONDS
               done
 EOF
-
-# Deploy
-kubectl apply -f gridwitness-agent.yaml
-
-# Verify
-kubectl get pods -n gridwitness
-kubectl logs -n gridwitness -l app.kubernetes.io/name=gridwitness-agent --tail=10`;
+kubectl apply -f gridwitness-agent.yaml`;
 
   const currentScript =
     tab === 'windows' ? psScript :
@@ -844,11 +520,8 @@ kubectl logs -n gridwitness -l app.kubernetes.io/name=gridwitness-agent --tail=1
     <section className="bg-white border rounded-lg p-6 shadow-sm">
       <h2 className="text-xl font-semibold mb-2 text-gray-900">Agent Installation Scripts</h2>
       <p className="text-sm text-gray-500 mb-4">
-        Install the GridWitness telemetry agent on your servers. Pre-configured for tenant{' '}
-        <code className="text-xs bg-gray-100 px-1.5 py-0.5 rounded">{tenantId}</code> · environment{' '}
-        <strong>{activeEnv}</strong> · polling every 5 minutes.
+        Pre-configured for tenant <code className="text-xs bg-gray-100 px-1.5 py-0.5 rounded">{tenantId}</code> · polls every 5 minutes.
       </p>
-
       <div className="flex gap-1 mb-3 border-b">
         {(['windows', 'linux', 'docker', 'k8s'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
@@ -856,25 +529,18 @@ kubectl logs -n gridwitness -l app.kubernetes.io/name=gridwitness-agent --tail=1
               tab === t ? 'border-blue-600 text-blue-700' : 'border-transparent text-gray-600 hover:text-gray-900'
             }`}>
             {t === 'windows' ? 'Windows (PowerShell)' :
-             t === 'linux'   ? 'Linux (Bash + systemd)' :
+             t === 'linux'   ? 'Linux (Bash)' :
              t === 'docker'  ? 'Docker' :
                                'Kubernetes (kubectl)'}
           </button>
         ))}
       </div>
-
       <div className="relative">
         <pre className="bg-gray-900 text-gray-100 text-xs p-4 rounded-lg overflow-x-auto font-mono leading-relaxed">{currentScript}</pre>
         <button onClick={copyToClipboard}
                 className="absolute top-2 right-2 px-3 py-1 bg-gray-700 hover:bg-gray-600 text-white text-xs rounded">
           {copied ? '✓ Copied' : 'Copy'}
         </button>
-      </div>
-
-      <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-900">
-        <strong>Note:</strong> The Linux script includes a systemd unit to survive reboots.
-        The K8s manifest is a complete DaemonSet — one agent pod per node.
-        All scripts target the verified GridWitness ingest endpoint.
       </div>
     </section>
   );
@@ -899,13 +565,6 @@ function NotificationsSection() {
           </div>
           <span className="px-2 py-1 bg-gray-200 text-gray-600 text-xs rounded">NOT CONFIGURED</span>
         </div>
-        <div className="flex justify-between items-center p-3 bg-gray-50 rounded">
-          <div>
-            <div className="font-medium text-gray-900">Webhook Integrations (Slack / Teams / PagerDuty)</div>
-            <div className="text-xs text-gray-500">Real-time incident push to your channel</div>
-          </div>
-          <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded">COMING SOON</span>
-        </div>
       </div>
     </section>
   );
@@ -915,19 +574,14 @@ function ApiReferenceSection({ tenantId }: { tenantId: string }) {
   const endpoints = [
     { method: 'GET',    path: `/api/tenants/${tenantId}/thresholds`, desc: 'Read alert thresholds' },
     { method: 'PUT',    path: `/api/tenants/${tenantId}/thresholds`, desc: 'Update alert thresholds' },
-    { method: 'GET',    path: `/api/tenants/${tenantId}/environments`, desc: 'List environments' },
-    { method: 'POST',   path: `/api/tenants/${tenantId}/environments`, desc: 'Create environment' },
-    { method: 'GET',    path: `/api/tenants/${tenantId}/devices`,    desc: 'List devices' },
-    { method: 'POST',   path: `/api/tenants/${tenantId}/devices/{device_id}`, desc: 'Assign device to environment' },
     { method: 'GET',    path: `/api/tenants/${tenantId}/aws`,        desc: 'AWS integration status' },
     { method: 'POST',   path: `/api/tenants/${tenantId}/aws`,        desc: 'Connect AWS account' },
-    { method: 'DELETE', path: `/api/tenants/${tenantId}/aws`,        desc: 'Revoke AWS integration' },
     { method: 'GET',    path: `/api/incidents?tenant_id=${tenantId}`, desc: 'List incidents' },
     { method: 'POST',   path: '/api/reports/generate',                desc: 'Generate compliance report' },
     { method: 'GET',    path: '/api/grid-status',                     desc: 'Live provincial grid intensity' },
+    { method: 'GET',    path: '/api/telemetry/live',                  desc: 'Live telemetry stream' },
     { method: 'GET',    path: '/api/verify/{merkle_root}',            desc: 'Public Merkle root verification' },
   ];
-
   return (
     <section className="bg-white border rounded-lg p-6 shadow-sm">
       <h2 className="text-xl font-semibold mb-4 text-gray-900">API Reference</h2>
