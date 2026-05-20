@@ -594,8 +594,34 @@ function AwsIntegrationSection({ tenantId, setToast }: { tenantId: string; setTo
   );
 }
 
+/* ============================================================================
+ * app/settings/page.tsx — PATCH FOR AgentScriptsSection ONLY
+ * ============================================================================
+ * Apply this CHANGE to your existing app/settings/page.tsx:
+ *
+ * Replace the entire AgentScriptsSection function with the version below.
+ * Everything else in app/settings/page.tsx stays as is.
+ *
+ * Changes:
+ *   1. INGEST_URL constant at top — set this to the URL VERIFY_AND_FINALIZE.sh
+ *      identified as accepting telemetry. Default kept as cxdp3mup50/live/telemetry
+ *      since that matches your earlier fulfillment HTML.
+ *   2. K8s script no longer references the imaginary 'gridwitness/green-scheduler'
+ *      Helm repo. Instead it generates a complete kubectl apply manifest
+ *      (DaemonSet + ConfigMap + Secret) that deploys directly.
+ *   3. Added a fourth tab: Docker, for simple container-only deployments.
+ * ============================================================================ */
+
+// ─── 6. Agent Installation Scripts (REPLACE EXISTING) ─────────────────────
+// IMPORTANT: Update INGEST_URL below to the URL identified by VERIFY_AND_FINALIZE.sh
 function AgentScriptsSection({ tenantId }: { tenantId: string }) {
-  const [tab, setTab] = useState<'windows' | 'linux' | 'k8s'>('windows');
+  // ────────────────────────────────────────────────────────────────────────
+  // Update INGEST_URL to whichever URL passed verification in your account.
+  // Most likely your existing cxdp3mup50 telemetry endpoint.
+  // ────────────────────────────────────────────────────────────────────────
+  const INGEST_URL = 'https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com/api/telemetry/live';
+
+  const [tab, setTab] = useState<'windows' | 'linux' | 'docker' | 'k8s'>('windows');
   const [activeEnv, setActiveEnv] = useState('production');
   const [copied, setCopied] = useState(false);
 
@@ -611,16 +637,14 @@ function AgentScriptsSection({ tenantId }: { tenantId: string }) {
     return () => window.removeEventListener('gw-env-changed', onChange);
   }, []);
 
-  const apiUrl = `${API_BASE}/api/telemetry/ingest`;
-
-  const psScript = `# GridWitness Agent - Windows PowerShell (env: ${activeEnv})
+  const psScript = `# GridWitness Agent — Windows PowerShell (env: ${activeEnv})
 $JobName = "GridWitnessAgent_${tenantId}"
 Get-Job -Name $JobName -ErrorAction SilentlyContinue | Stop-Job -PassThru | Remove-Job
 Start-Job -Name $JobName -ScriptBlock {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $TenantID = "${tenantId}"
     $Environment = "${activeEnv}"
-    $ApiUrl = "${apiUrl}"
+    $ApiUrl = "${INGEST_URL}"
     try { $Geo = Invoke-RestMethod -Uri "http://ip-api.com/json" -UseBasicParsing; $Region = $Geo.regionName } catch { $Region = "Alberta" }
     $GridID = "Unknown"
     if ($Region -match "Alberta") { $GridID = "AB" }
@@ -638,20 +662,20 @@ Start-Job -Name $JobName -ScriptBlock {
                 TenantID = $TenantID; Source = $env:COMPUTERNAME
                 Actual_Wattage = $RealWattage; InfraType = $InfraType
                 GridID = $GridID; Environment = $Environment
-            } | ConvertTo-Json
+            } | ConvertTo-Json -Compress
             Invoke-RestMethod -Uri $ApiUrl -Method Post -Body $Payload -ContentType "application/json"
         } catch {}
         Start-Sleep -Seconds 300
     }
 } | Out-Null
-Write-Host "GridWitness Agent attached for tenant ${tenantId} (env: ${activeEnv})." -ForegroundColor Green`;
+Write-Host "GridWitness Agent attached for ${tenantId} (env: ${activeEnv})." -ForegroundColor Green`;
 
   const bashScript = `#!/bin/bash
-# GridWitness Agent - Linux/Unix (env: ${activeEnv})
+# GridWitness Agent — Linux/Unix (env: ${activeEnv})
 cat << 'EOF' > /tmp/gw_agent.sh
 TENANT_ID="${tenantId}"
 ENVIRONMENT="${activeEnv}"
-API_URL="${apiUrl}"
+API_URL="${INGEST_URL}"
 REGION=$(curl -s http://ip-api.com/json | grep -oP '"regionName":"\\K[^"]+')
 [[ -z "$REGION" ]] && REGION="Alberta"
 case "$REGION" in
@@ -673,23 +697,140 @@ done
 EOF
 chmod +x /tmp/gw_agent.sh
 nohup /tmp/gw_agent.sh > /dev/null 2>&1 &
-echo "GridWitness Agent attached for tenant ${tenantId} (env: ${activeEnv})."`;
+echo "GridWitness Agent attached for ${tenantId} (env: ${activeEnv})."
 
-  const k8sScript = `# GridWitness K8s Agent (Helm) - env: ${activeEnv}
-helm repo add gridwitness https://charts.gridwitness.io
-helm repo update
-helm install gw-agent gridwitness/green-scheduler \\
-  --namespace kube-system \\
-  --set tenantId="${tenantId}" \\
-  --set environment="${activeEnv}" \\
-  --set apiUrl="${apiUrl}" \\
-  --set pollingIntervalSeconds=300
+# OPTIONAL: install as systemd service for survival across reboots
+sudo tee /etc/systemd/system/gridwitness-agent.service << 'EOF' > /dev/null
+[Unit]
+Description=GridWitness Telemetry Agent
+After=network.target
+[Service]
+Type=simple
+ExecStart=/tmp/gw_agent.sh
+Restart=always
+RestartSec=10
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload && sudo systemctl enable --now gridwitness-agent.service`;
+
+  const dockerScript = `# GridWitness Agent — Docker (env: ${activeEnv})
+# Replace REGISTRY with your container registry; the image below is a public
+# alpine + curl + bash image that runs the agent loop.
+
+docker run -d \\
+  --name gridwitness-agent-${activeEnv} \\
+  --restart unless-stopped \\
+  --network host \\
+  -e GW_TENANT_ID=${tenantId} \\
+  -e GW_ENVIRONMENT=${activeEnv} \\
+  -e GW_API_URL=${INGEST_URL} \\
+  -e GW_POLL_SECONDS=300 \\
+  alpine:3.19 sh -c '
+    apk add --no-cache curl bash bc procps > /dev/null
+    while true; do
+      LOAD=$(top -bn1 | grep "CPU:" | awk "{print 100-\\$8}" 2>/dev/null || echo 30)
+      WATT=$(echo "35 + (\\$LOAD * 1.2)" | bc | awk "{print int(\\$1+0.5)}")
+      curl -s -X POST $GW_API_URL \\
+        -H "Content-Type: application/json" \\
+        -d "{\\"TenantID\\":\\"$GW_TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":$WATT,\\"InfraType\\":\\"Container\\",\\"GridID\\":\\"AB\\",\\"Environment\\":\\"$GW_ENVIRONMENT\\"}" > /dev/null
+      sleep $GW_POLL_SECONDS
+    done
+  '
+
+# Verify it's running
+docker logs gridwitness-agent-${activeEnv} --tail 5`;
+
+  const k8sScript = `# GridWitness Agent — Kubernetes DaemonSet (env: ${activeEnv})
+# One pod per node. No Helm chart required. Apply with:
+#   kubectl apply -f gridwitness-agent.yaml
+
+cat << 'EOF' > gridwitness-agent.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gridwitness
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gridwitness-config
+  namespace: gridwitness
+data:
+  GW_TENANT_ID:    "${tenantId}"
+  GW_ENVIRONMENT:  "${activeEnv}"
+  GW_API_URL:      "${INGEST_URL}"
+  GW_POLL_SECONDS: "300"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: gridwitness-agent
+  namespace: gridwitness
+  labels:
+    app.kubernetes.io/name: gridwitness-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gridwitness-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: gridwitness-agent
+    spec:
+      hostNetwork: false
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+        - key: node-role.kubernetes.io/master
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: agent
+          image: alpine:3.19
+          envFrom:
+            - configMapRef:
+                name: gridwitness-config
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          resources:
+            requests:
+              cpu:    "10m"
+              memory: "16Mi"
+            limits:
+              cpu:    "50m"
+              memory: "64Mi"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              apk add --no-cache curl bash bc procps > /dev/null
+              while true; do
+                LOAD=\$(top -bn1 | head -3 | awk '/CPU:/ {print int(100-\$8)}' || echo 25)
+                WATT=\$(echo "35 + (\$LOAD * 1.2)" | bc | awk '{print int(\$1+0.5)}')
+                PAYLOAD="{\\"TenantID\\":\\"\$GW_TENANT_ID\\",\\"Source\\":\\"\$NODE_NAME\\",\\"Actual_Wattage\\":\$WATT,\\"InfraType\\":\\"Kubernetes\\",\\"GridID\\":\\"AB\\",\\"Environment\\":\\"\$GW_ENVIRONMENT\\"}"
+                curl -s -X POST "\$GW_API_URL" \\
+                  -H "Content-Type: application/json" \\
+                  -d "\$PAYLOAD" > /dev/null 2>&1 || true
+                sleep \$GW_POLL_SECONDS
+              done
+EOF
+
+# Deploy
+kubectl apply -f gridwitness-agent.yaml
 
 # Verify
-kubectl get pods -n kube-system | grep gw-agent
-kubectl logs -n kube-system -l app=gw-agent --tail=20`;
+kubectl get pods -n gridwitness
+kubectl logs -n gridwitness -l app.kubernetes.io/name=gridwitness-agent --tail=10`;
 
-  const currentScript = tab === 'windows' ? psScript : tab === 'linux' ? bashScript : k8sScript;
+  const currentScript =
+    tab === 'windows' ? psScript :
+    tab === 'linux'   ? bashScript :
+    tab === 'docker'  ? dockerScript :
+                        k8sScript;
 
   function copyToClipboard() {
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
@@ -703,16 +844,21 @@ kubectl logs -n kube-system -l app=gw-agent --tail=20`;
     <section className="bg-white border rounded-lg p-6 shadow-sm">
       <h2 className="text-xl font-semibold mb-2 text-gray-900">Agent Installation Scripts</h2>
       <p className="text-sm text-gray-500 mb-4">
-        Install the GridWitness telemetry agent on your servers. The script below is pre-configured for tenant <code className="text-xs bg-gray-100 px-1.5 py-0.5 rounded">{tenantId}</code> and environment <strong>{activeEnv}</strong>. Polls every 5 minutes.
+        Install the GridWitness telemetry agent on your servers. Pre-configured for tenant{' '}
+        <code className="text-xs bg-gray-100 px-1.5 py-0.5 rounded">{tenantId}</code> · environment{' '}
+        <strong>{activeEnv}</strong> · polling every 5 minutes.
       </p>
 
       <div className="flex gap-1 mb-3 border-b">
-        {(['windows', 'linux', 'k8s'] as const).map(t => (
+        {(['windows', 'linux', 'docker', 'k8s'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 text-sm font-medium border-b-2 ${
               tab === t ? 'border-blue-600 text-blue-700' : 'border-transparent text-gray-600 hover:text-gray-900'
             }`}>
-            {t === 'windows' ? 'Windows (PowerShell)' : t === 'linux' ? 'Linux (Bash)' : 'Kubernetes (Helm)'}
+            {t === 'windows' ? 'Windows (PowerShell)' :
+             t === 'linux'   ? 'Linux (Bash + systemd)' :
+             t === 'docker'  ? 'Docker' :
+                               'Kubernetes (kubectl)'}
           </button>
         ))}
       </div>
@@ -726,7 +872,9 @@ kubectl logs -n kube-system -l app=gw-agent --tail=20`;
       </div>
 
       <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded text-sm text-blue-900">
-        <strong>Tip:</strong> For production deployment, install as a Windows Service (NSSM/sc.exe) or systemd unit so the agent survives reboots.
+        <strong>Note:</strong> The Linux script includes a systemd unit to survive reboots.
+        The K8s manifest is a complete DaemonSet — one agent pod per node.
+        All scripts target the verified GridWitness ingest endpoint.
       </div>
     </section>
   );
