@@ -1,12 +1,12 @@
 /* ============================================================================
- * components/Nav.tsx — FINAL VERSION
+ * components/Nav.tsx — FINAL with dynamic env label
  * ============================================================================
- * Drop-in replacement that:
- *   - Accepts optional tenantId prop (fixes Vercel build error)
- *   - Falls back to URL ?tenant_id=... and localStorage
- *   - Integrates EnvironmentSwitcher into the top nav
- *   - Backward-compatible with existing pages that pass <Nav tenantId={x}/>
- *     and pages that pass <Nav /> with no props
+ * Changes from prior version:
+ *   - "STAGING" badge next to logo is now DYNAMIC — reflects current active env
+ *   - Listens to localStorage changes (when EnvironmentSwitcher updates env)
+ *   - Listens to a custom 'gw-env-changed' event for same-tab updates
+ *   - Color of badge changes based on env (production=green, staging=amber,
+ *     others=indigo)
  * ============================================================================ */
 
 'use client';
@@ -27,10 +27,18 @@ interface NavProps {
   tenantId?: string;
 }
 
+function envBadgeColor(env: string): string {
+  if (env === 'production' || env === 'live') return 'bg-green-100 text-green-800';
+  if (env === 'staging' || env === 'stage')   return 'bg-amber-100 text-amber-800';
+  if (env === 'qa' || env === 'test')         return 'bg-blue-100  text-blue-800';
+  return 'bg-indigo-100 text-indigo-800';
+}
+
 export default function Nav({ tenantId: propTenantId }: NavProps = {}) {
   const pathname = usePathname();
   const [tenantId, setTenantId] = useState<string>(propTenantId || 'GW-NIMBL-AEB47A92');
   const [tenantName, setTenantName] = useState<string>('');
+  const [activeEnv, setActiveEnv] = useState<string>('production');
 
   useEffect(() => {
     if (propTenantId) {
@@ -45,6 +53,28 @@ export default function Nav({ tenantId: propTenantId }: NavProps = {}) {
   }, [propTenantId]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.localStorage.getItem('gw_active_env');
+    if (stored) setActiveEnv(stored);
+
+    // Listen for env changes from EnvironmentSwitcher (other components in same tab)
+    const onEnvChange = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.env) setActiveEnv(detail.env);
+    };
+    // Listen for cross-tab localStorage changes
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === 'gw_active_env' && e.newValue) setActiveEnv(e.newValue);
+    };
+    window.addEventListener('gw-env-changed', onEnvChange);
+    window.addEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('gw-env-changed', onEnvChange);
+      window.removeEventListener('storage', onStorage);
+    };
+  }, []);
+
+  useEffect(() => {
     if (!tenantId) return;
     fetch(`https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com/api/tenants/${tenantId}`)
       .then(r => r.ok ? r.json() : null)
@@ -52,16 +82,14 @@ export default function Nav({ tenantId: propTenantId }: NavProps = {}) {
       .catch(() => {});
   }, [tenantId]);
 
-  const envLabel = 'STAGING'; // staging API endpoint — change when prod env exists
-
   return (
     <header className="bg-white border-b shadow-sm">
       <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between gap-6">
         <div className="flex items-center gap-4">
           <Link href={`/monitor?tenant_id=${tenantId}`} className="flex items-center gap-2">
             <span className="text-xl font-bold text-gray-900">GridWitness</span>
-            <span className="px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 text-amber-800">
-              {envLabel}
+            <span className={`px-2 py-0.5 rounded text-xs font-semibold ${envBadgeColor(activeEnv)}`}>
+              {activeEnv.toUpperCase()}
             </span>
           </Link>
 
@@ -70,6 +98,12 @@ export default function Nav({ tenantId: propTenantId }: NavProps = {}) {
           <EnvironmentSwitcher
             tenantId={tenantId}
             tenantName={tenantName || undefined}
+            onChange={(env) => {
+              setActiveEnv(env);
+              if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('gw-env-changed', { detail: { env } }));
+              }
+            }}
           />
         </div>
 
