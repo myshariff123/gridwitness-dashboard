@@ -1,7 +1,10 @@
 'use client'
 // app/settings/page.tsx — DARK THEME
 // Matches /incidents and /compliance visually.
-
+import WebhookSection  from '@/components/settings/WebhookSection'
+import ApiKeysSection  from '@/components/settings/ApiKeysSection'
+import TeamSection     from '@/components/settings/TeamSection'
+import BrandingSection from '@/components/settings/BrandingSection'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import Nav from '@/components/Nav'
 import {
