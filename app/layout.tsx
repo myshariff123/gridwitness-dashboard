@@ -1,5 +1,6 @@
 import type { Metadata } from 'next'
 import './globals.css'
+import { ToastProvider } from '@/components/Toast'
 
 export const metadata: Metadata = {
   title: 'GridWitness — Hardware-Anchored ESG Compliance',
@@ -10,8 +11,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="bg-gw-dark text-white min-h-screen font-sans antialiased">
-        {children}
-      </body>
+  <ToastProvider>
+    {children}
+  </ToastProvider>
+</body>
     </html>
   )
 }
