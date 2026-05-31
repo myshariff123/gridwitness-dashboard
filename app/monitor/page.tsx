@@ -2,6 +2,7 @@
 // app/monitor/page.tsx — DARK THEME
 // Fetches real data from /api/telemetry/live and /api/grid-status
 
+import CarbonTrendSparkline from '@/components/CarbonTrendSparkline'
 import { useEffect, useState, useCallback } from 'react'
 import Nav from '@/components/Nav'
 import { Activity, Zap, Server, RefreshCw } from 'lucide-react'
@@ -71,7 +72,8 @@ export default function MonitorPage() {
   const [loading, setLoading]        = useState(true)
   const [lastUpdate, setLastUpdate]  = useState<Date>(new Date())
   const [err, setErr]                = useState<string | null>(null)
-
+  const [rawRecords, setRawRecords] = useState<TelemetryRecord[]>([])
+  
   useEffect(() => {
     if (typeof window === 'undefined') return
     const url = new URLSearchParams(window.location.search)
@@ -88,6 +90,7 @@ export default function MonitorPage() {
       if (telRes.ok) {
         const telData: TelemetryRecord[] = await telRes.json()
         setTotal(telData.length)
+        setRawRecords(telData)
 
         const byDevice = new Map<string, TelemetryRecord>()
         for (let i = 0; i < telData.length; i++) {
@@ -227,6 +230,7 @@ export default function MonitorPage() {
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-white flex items-center gap-2">
               <Server className="w-4 h-4 text-gw-green" />
+              <CarbonTrendSparkline records={rawRecords} bucketMinutes={60} buckets={24} />
               Active Device Stream
               <span className="ml-2 text-xs border border-gw-green/30 text-gw-green px-2 py-0.5 rounded">
                 {devices.length} nodes
