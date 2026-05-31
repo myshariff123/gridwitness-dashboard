@@ -1,267 +1,219 @@
-const API = process.env.NEXT_PUBLIC_API_URL
+// lib/api.ts — Real API client for GridWitness (v2 — handles envelope + flat shapes)
+// Tolerates both /api/telemetry/live response shapes:
+//   A) Flat array:        [{...}, {...}]
+//   B) Envelope:          {records: [{...}, {...}]}
+// And both field naming conventions:
+//   New: gCO2e, Actual_Wattage, Timestamp, InfraType
+//   Old: CarbonDebt_gCO2, ActualWattage, SealedAt, DataSource
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ||
+                 'https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com'
+
+// ──────────────────────────────────────────────────────────────────────────
+// Types
+// ──────────────────────────────────────────────────────────────────────────
 export interface TelemetryRecord {
-  TenantID: string
-  Timestamp: string
-  Source: string
-  ActualWattage: number
-  GridID: string
-  CarbonIntensity: number
-  CarbonDebt_gCO2: number
-  DataSource: string
-  DataQuality: string
-  SHA256Hash: string
-  SealedAt: string
-  TxID: string
+  TenantID:        string
+  Timestamp:       string
+  Source:          string
+  GridID:          string
+  Actual_Wattage:  number
+  InfraType?:      string
+  gCO2e:           number
+  // Legacy aliases kept for components that read old names directly
+  ActualWattage?:    number
+  CarbonDebt_gCO2?:  number
+  DataSource?:       string
+  SealedAt?:         string
+  CarbonIntensity?:  number
+  SHA256Hash?:       string
 }
 
-export interface GridEntry {
-  GridID: string
-  CapturedAt: string
-  CarbonIntensity: number
-  DataQuality: string
+export interface Incident {
+  TenantID:    string
+  IncidentID:  string
+  GridID:      string
+  Metric:      string
+  Status:      'OPEN' | 'CLOSED'
+  Severity?:   'WARNING' | 'CRITICAL'
+  BreachValue: number
+  PeakValue?:  number
+  Threshold:   number
+  OpenedAt:    string
+  ClosedAt?:   string
+  LastAction?: string
+  LastActionAt?: string
 }
 
-export interface TenantProvisionResponse {
-  tenant_id: string
-  status: string
-  next_step: string
-  created_at: string
+export interface GridSnapshot {
+  GridID:           string
+  CurrentIntensity?: number
+  CarbonIntensity?:  number
+  Source?:          string
+  UpdatedAt?:       string
+  PoolPrice?:       number
 }
 
-export interface GridThresholds {
-  gridId:        string
-  carbonAlert:   number   // gCO2/kWh — breach triggers incident
-  loadAlert:     number   // % of capacity — critical for QC/BC
-  priceAlert:    number   // $/MWh — AESO only
-  description:   string
-}
-
-// Grid-specific default thresholds based on each grid's historical profile
-// AB is always dirty (510 baseline) — threshold set high to catch genuine spikes
-// QC is always clean — load is the critical factor, not carbon
-export const DEFAULT_GRID_THRESHOLDS: GridThresholds[] = [
-  {
-    gridId:      'AB',
-    carbonAlert: 650,
-    loadAlert:   90,
-    priceAlert:  150,
-    description: 'Alberta — AESO. Baseline ~510 gCO2/kWh coal/gas mix. Alert on genuine spikes above 650. Price alert at $150/MWh (historical avg ~$60).',
-  },
-  {
-    gridId:      'ON',
-    carbonAlert: 100,
-    loadAlert:   85,
-    priceAlert:  120,
-    description: 'Ontario — IESO. Mostly nuclear/hydro. Alert on carbon above 100 (gas peakers). Price alert at $120/MWh.',
-  },
-  {
-    gridId:      'BC',
-    carbonAlert: 40,
-    loadAlert:   88,
-    priceAlert:  80,
-    description: 'British Columbia — BC Hydro. Almost entirely hydro. Carbon alert at 40 flags rare fossil backup. Load is secondary concern.',
-  },
-  {
-    gridId:      'QC',
-    carbonAlert: 15,
-    loadAlert:   82,
-    priceAlert:  60,
-    description: 'Québec — Hydro-QC. Near-zero carbon. Load threshold 82% is primary alert — grid stress here is a capacity issue not emissions.',
-  },
+// ──────────────────────────────────────────────────────────────────────────
+// Defaults
+// ──────────────────────────────────────────────────────────────────────────
+export const DEFAULT_GRID_THRESHOLDS: Array<{
+  gridId: string; carbonAlert: number; loadAlert: number; priceAlert: number
+}> = [
+  { gridId: 'AB', carbonAlert: 600, loadAlert: 85, priceAlert: 300 },
+  { gridId: 'ON', carbonAlert: 100, loadAlert: 85, priceAlert: 200 },
+  { gridId: 'BC', carbonAlert:  50, loadAlert: 85, priceAlert: 200 },
+  { gridId: 'QC', carbonAlert:  20, loadAlert: 85, priceAlert: 200 },
 ]
 
-export async function checkHealth(): Promise<boolean> {
-  try {
-    const res = await fetch(`${API}/health`, { cache: 'no-store' })
-    return res.ok
-  } catch {
-    return false
-  }
-}
-
-export async function provisionTenant(
-  orgName: string,
-  adminEmail: string,
-  tier = 'TIER_1_AUDIT'
-): Promise<TenantProvisionResponse> {
-  const res = await fetch(`${API}/api/tenant/provision`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      organization_name: orgName,
-      admin_email:       adminEmail,
-      subscription_tier: tier,
-    }),
+// ──────────────────────────────────────────────────────────────────────────
+// Fetch helper
+// ──────────────────────────────────────────────────────────────────────────
+async function gwFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const r = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
+    cache: 'no-store',
   })
-  if (!res.ok) throw new Error(`Provisioning failed: ${res.status}`)
-  return res.json()
-}
-
-export async function getLiveGridData(): Promise<GridEntry[]> {
-  try {
-    const res = await fetch(`${API}/api/grid/live`, { cache: 'no-store' })
-    if (!res.ok) throw new Error(`Grid API ${res.status}`)
-    const data = await res.json()
-    return data.grids || []
-  } catch {
-    // Fallback to known baselines if API unreachable
-    return [
-      { GridID: 'AB', CapturedAt: new Date().toISOString(), CarbonIntensity: 510, DataQuality: 'FALLBACK' },
-      { GridID: 'ON', CapturedAt: new Date().toISOString(), CarbonIntensity: 40,  DataQuality: 'FALLBACK' },
-      { GridID: 'BC', CapturedAt: new Date().toISOString(), CarbonIntensity: 15,  DataQuality: 'FALLBACK' },
-      { GridID: 'QC', CapturedAt: new Date().toISOString(), CarbonIntensity: 2,   DataQuality: 'FALLBACK' },
-    ]
+  if (!r.ok) {
+    let detail = ''
+    try { detail = (await r.json()).error || '' } catch {}
+    throw new Error(detail || `HTTP ${r.status} ${r.statusText}`)
   }
+  return r.json() as Promise<T>
 }
 
-export async function getTelemetry(tenantId: string): Promise<TelemetryRecord[]> {
+// Unwrap response — tolerates flat array, {records:[...]}, {items:[...]}, {data:[...]}
+function unwrapList(raw: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(raw)) return raw as Array<Record<string, unknown>>
+  if (raw && typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>
+    for (const key of ['records', 'items', 'data', 'results']) {
+      if (Array.isArray(obj[key])) return obj[key] as Array<Record<string, unknown>>
+    }
+  }
+  return []
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Telemetry — live records  (THE FIX: handles both shapes + both names)
+// ──────────────────────────────────────────────────────────────────────────
+export async function getLiveTelemetry(tenantId: string): Promise<TelemetryRecord[]> {
   try {
-    const res = await fetch(
-      `${API}/api/telemetry/live?tenant_id=${encodeURIComponent(tenantId)}`,
-      { cache: 'no-store' }
-    )
-    if (!res.ok) throw new Error(`Telemetry API ${res.status}`)
-    const data = await res.json()
-    return data.records || []
+    const raw = await gwFetch<unknown>(
+      `/api/telemetry/live?tenant_id=${encodeURIComponent(tenantId)}`)
+
+    const list = unwrapList(raw)
+
+    return list.map(r => {
+      const wattage = Number(r.Actual_Wattage ?? r.ActualWattage ?? 0)
+      const carbon  = Number(r.gCO2e ?? r.CarbonDebt_gCO2 ?? 0)
+      const ts      = String(r.Timestamp ?? r.SealedAt ?? '')
+      const src     = String(r.Source ?? '')
+      const ds      = String(r.DataSource ?? '')
+      let infra     = String(r.InfraType ?? '')
+      if (!infra) {
+        if      (ds === 'CLOUD_DISCOVERY') infra = 'AWS Cloud'
+        else if (ds === 'REDFISH_BMC')     infra = 'BMC Redfish'
+        else if (src.startsWith('i-'))     infra = 'AWS Cloud'
+        else                                infra = 'Edge Agent'
+      }
+
+      return {
+        ...r,
+        TenantID:         String(r.TenantID ?? tenantId),
+        Source:           src,
+        GridID:           String(r.GridID ?? 'AB'),
+        Timestamp:        ts,
+        Actual_Wattage:   wattage,
+        gCO2e:            carbon,
+        InfraType:        infra,
+        // Keep legacy aliases populated too
+        ActualWattage:    wattage,
+        CarbonDebt_gCO2:  carbon,
+        DataSource:       ds || (infra.includes('Cloud') ? 'CLOUD_DISCOVERY' : 'EDGE_AGENT'),
+        SealedAt:         ts,
+      } as TelemetryRecord
+    })
   } catch (e) {
-    console.warn('Telemetry API unavailable:', e)
+    console.error('getLiveTelemetry failed:', e)
     return []
   }
 }
 
-export async function getCarbonSummary(tenantId: string) {
-  const records = await getTelemetry(tenantId)
-
-  const active = records
-
-  const cloudNodes = active.filter(r => r.DataSource === 'CLOUD_DISCOVERY')
-  const physNodes  = active.filter(r =>
-    r.DataSource === 'EDGE_AGENT' || r.DataSource === 'REDFISH_BMC'
-  )
-
-  const scope2 = physNodes.reduce((s, r)  => s + (r.CarbonDebt_gCO2 || 0), 0)
-  const scope3 = cloudNodes.reduce((s, r) => s + (r.CarbonDebt_gCO2 || 0), 0)
-  const total  = scope2 + scope3
-
-  const uniqueSources = new Set(active.map(r => r.Source))
-
-  return {
-    netCarbonKg:    +(total  / 1000).toFixed(6),
-    scope2Kg:       +(scope2 / 1000).toFixed(6),
-    scope3Kg:       +(scope3 / 1000).toFixed(6),
-    liveNodesTotal: uniqueSources.size,
-    liveNodesCloud: new Set(cloudNodes.map(r => r.Source)).size,
-    liveNodesPhys:  new Set(physNodes.map(r => r.Source)).size,
-    records:        active,
-    hasRealData:    active.length > 0,
+// ──────────────────────────────────────────────────────────────────────────
+// Grid status
+// ──────────────────────────────────────────────────────────────────────────
+export async function getLiveGridData(): Promise<GridSnapshot[]> {
+  try {
+    const raw = await gwFetch<unknown>(`/api/grid-status`)
+    const list = unwrapList(raw)
+    return list.map(g => ({
+      ...g,
+      GridID:           String(g.GridID ?? ''),
+      CurrentIntensity: Number(g.CurrentIntensity ?? g.CarbonIntensity ?? 0),
+      CarbonIntensity:  Number(g.CarbonIntensity ?? g.CurrentIntensity ?? 0),
+    })) as GridSnapshot[]
+  } catch (e) {
+    console.error('getLiveGridData failed:', e)
+    return []
   }
 }
 
-// Report generation — uses date_from/date_to as expected by ms-osfi-reporting Lambda
-export async function generateReport(
-  tenantId: string,
-  dateFrom: string,
-  dateTo: string,
-  frameworks: string[] = ['OSFI_B15', 'BILL_C59']
-): Promise<{ status: string; message: string }> {
-  const res = await fetch(`${API}/api/reports/generate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      tenant_id: tenantId,
-      date_from: `${dateFrom}T00:00:00Z`,
-      date_to:   `${dateTo}T23:59:59Z`,
-      format:    'PDF',
-      frameworks,
-    }),
-  })
-  if (res.status >= 200 && res.status < 300) {
-    return { status: 'QUEUED', message: 'Report queued successfully' }
-  }
-  throw new Error(`Report failed: ${res.status}`)
-}
-// ════════════════════════════════════════════════════════════════
-// APPEND THIS BLOCK TO lib/api.ts in your dashboard repo
-// (or replace the file end — keep all existing exports above)
-// ════════════════════════════════════════════════════════════════
-
-export interface Incident {
-  TenantID:           string
-  IncidentID:         string
-  GridID:             string
-  Metric:             string       // carbon_intensity | load_pct | price_mwh
-  Status:             'OPEN' | 'CLOSED'
-  Severity:           'WARNING' | 'CRITICAL'
-  BreachValue:        number
-  PeakValue?:         number
-  Threshold:          number
-  OpenedAt:           string
-  LastObservedAt?:    string
-  ClosedAt?:          string
-  ClosureValue?:      number
-  ClosureReason?:     string
-  LastAction?:        string
-  LastActionAt?:      string
-  ActionsTaken?:      Array<{ action: string; at: string; by: string; notes?: string }>
-}
-
+// ──────────────────────────────────────────────────────────────────────────
+// Incidents
+// ──────────────────────────────────────────────────────────────────────────
 export async function listIncidents(
   tenantId: string,
   status?: 'OPEN' | 'CLOSED'
 ): Promise<Incident[]> {
+  const q = new URLSearchParams({ tenant_id: tenantId })
+  if (status) q.set('status', status)
   try {
-    const url = new URL(`${API}/api/incidents`)
-    url.searchParams.set('tenant_id', tenantId)
-    if (status) url.searchParams.set('status', status)
-    const res = await fetch(url.toString(), { cache: 'no-store' })
-    if (!res.ok) throw new Error(`Incidents API ${res.status}`)
-    const data = await res.json()
-    return data.incidents || []
+    const raw = await gwFetch<unknown>(`/api/incidents?${q.toString()}`)
+    return unwrapList(raw) as unknown as Incident[]
   } catch (e) {
-    console.warn('listIncidents failed:', e)
+    console.error('listIncidents failed:', e)
     return []
   }
 }
 
 export async function recordIncidentAction(
-  tenantId:    string,
-  incidentId:  string,
-  action:      'Acknowledge' | 'K8s_Scale_Down' | 'Manual_Power_Reduction',
-  actorEmail:  string,
-  notes:       string = ''
-): Promise<{ sealed_hash: string }> {
-  const res = await fetch(`${API}/api/incidents/${incidentId}/action`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({
-      tenant_id:    tenantId,
-      incident_id:  incidentId,
-      action,
-      actor_email:  actorEmail,
-      notes,
-    }),
+  tenantId: string, incidentId: string, action: string, actor: string,
+): Promise<void> {
+  await gwFetch<unknown>(`/api/incidents/${incidentId}/actions`, {
+    method: 'POST',
+    body: JSON.stringify({ tenant_id: tenantId, action, actor }),
   })
-  if (!res.ok) throw new Error(`Action failed: ${res.status}`)
-  return res.json()
 }
 
 export async function closeIncident(
-  tenantId:    string,
-  incidentId:  string,
-  actorEmail:  string,
-  reason:      string = 'manual_close'
-): Promise<{ sealed_hash: string }> {
-  const res = await fetch(`${API}/api/incidents/${incidentId}/close`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({
-      tenant_id:    tenantId,
-      incident_id:  incidentId,
-      actor_email:  actorEmail,
-      reason,
+  tenantId: string, incidentId: string, actor: string, reason: string,
+): Promise<void> {
+  await gwFetch<unknown>(`/api/incidents/${incidentId}/close`, {
+    method: 'POST',
+    body: JSON.stringify({ tenant_id: tenantId, actor, reason }),
+  })
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Reports
+// ──────────────────────────────────────────────────────────────────────────
+export async function generateReport(
+  tenantId: string, dateFrom: string, dateTo: string, frameworks: string[],
+): Promise<{ ok: boolean; message?: string }> {
+  return gwFetch<{ ok: boolean; message?: string }>(`/api/reports/generate`, {
+    method: 'POST',
+    body: JSON.stringify({
+      tenant_id: tenantId, date_from: dateFrom, date_to: dateTo,
+      format: 'PDF', frameworks,
     }),
   })
-  if (!res.ok) throw new Error(`Close failed: ${res.status}`)
-  return res.json()
+}
+
+export async function getLatestReport(tenantId: string): Promise<{
+  status: string; download_url?: string; report_id?: string
+}> {
+  return gwFetch<{ status: string; download_url?: string; report_id?: string }>(
+    `/api/reports/latest?tenant_id=${encodeURIComponent(tenantId)}`)
 }
