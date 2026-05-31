@@ -1,40 +1,27 @@
 'use client'
-// app/monitor/page.tsx — DARK THEME
-// Fetches real data from /api/telemetry/live and /api/grid-status
+// app/monitor/page.tsx — DARK THEME (FIXED v3)
+// Fixes:
+//   1. CarbonTrendSparkline is now its own panel (not nested inside h2)
+//   2. Uses lib/api.ts (envelope-aware) instead of raw fetch
+//   3. Handles both Timestamp/SealedAt and gCO2e/CarbonDebt_gCO2 field names
 
 import CarbonTrendSparkline from '@/components/CarbonTrendSparkline'
 import { useEffect, useState, useCallback } from 'react'
 import Nav from '@/components/Nav'
+import {
+  getLiveTelemetry, getLiveGridData,
+  type TelemetryRecord, type GridSnapshot,
+} from '@/lib/api'
 import { Activity, Zap, Server, RefreshCw } from 'lucide-react'
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ||
-                 'https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com'
-
-interface TelemetryRecord {
-  TenantID: string
-  Timestamp: string
-  Source: string
-  GridID: string
-  Actual_Wattage: number
-  InfraType?: string
-  gCO2e?: number
-}
-
-interface GridRow {
-  GridID: string
-  CurrentIntensity?: number
-  Source?: string
-  UpdatedAt?: string
-}
-
 interface DeviceRow {
-  source: string
-  type: string
-  wattage: number
-  grid: string
-  gCO2e: number
+  source:   string
+  type:     string
+  wattage:  number
+  grid:     string
+  gCO2e:    number
   lastSeen: Date
-  ageMin: number
+  ageMin:   number
 }
 
 const PROVINCES: Record<string, { name: string; operator: string }> = {
@@ -59,21 +46,22 @@ function inferType(infraType: string | undefined, source: string): string {
   if (infraType.includes('AWS') || infraType.includes('Cloud')) return 'AWS Cloud'
   if (infraType.includes('Kubernetes')) return 'Kubernetes'
   if (infraType.includes('Container'))  return 'Container'
-  if (infraType.includes('Private'))    return 'Edge Agent'
+  if (infraType.includes('Private') || infraType.includes('Edge')) return 'Edge Agent'
+  if (infraType.includes('BMC') || infraType.includes('Redfish')) return 'BMC Redfish'
   return infraType
 }
 
 export default function MonitorPage() {
-  const [tenantId, setTenantId]      = useState('GW-NIMBL-AEB47A92')
-  const [devices, setDevices]        = useState<DeviceRow[]>([])
-  const [grids, setGrids]            = useState<GridRow[]>([])
-  const [carbon24h, setCarbon24h]    = useState(0)
-  const [totalRecords, setTotal]     = useState(0)
-  const [loading, setLoading]        = useState(true)
-  const [lastUpdate, setLastUpdate]  = useState<Date>(new Date())
-  const [err, setErr]                = useState<string | null>(null)
+  const [tenantId, setTenantId]     = useState('GW-NIMBL-AEB47A92')
+  const [devices, setDevices]       = useState<DeviceRow[]>([])
+  const [grids, setGrids]           = useState<GridSnapshot[]>([])
+  const [carbonRecent, setCarbon]   = useState(0)
+  const [totalRecords, setTotal]    = useState(0)
+  const [loading, setLoading]       = useState(true)
+  const [lastUpdate, setLastUpdate] = useState<Date>(new Date())
+  const [err, setErr]               = useState<string | null>(null)
   const [rawRecords, setRawRecords] = useState<TelemetryRecord[]>([])
-  
+
   useEffect(() => {
     if (typeof window === 'undefined') return
     const url = new URLSearchParams(window.location.search)
@@ -86,61 +74,54 @@ export default function MonitorPage() {
   const loadData = useCallback(async () => {
     let anyError = false
     try {
-      const telRes = await fetch(`${API_BASE}/api/telemetry/live?tenant_id=${tenantId}`)
-      if (telRes.ok) {
-        const telData: TelemetryRecord[] = await telRes.json()
-        setTotal(telData.length)
-        setRawRecords(telData)
+      // Use envelope-aware lib/api.ts — handles {records:[...]} OR flat array
+      const telData = await getLiveTelemetry(tenantId)
+      setTotal(telData.length)
+      setRawRecords(telData)
 
-        const byDevice = new Map<string, TelemetryRecord>()
-        for (let i = 0; i < telData.length; i++) {
-          const r = telData[i]
-          const existing = byDevice.get(r.Source)
-          if (!existing || new Date(r.Timestamp) > new Date(existing.Timestamp)) {
-            byDevice.set(r.Source, r)
-          }
+      if (telData.length === 0) anyError = true
+
+      // Group by Source — keep newest record per device
+      const byDevice = new Map<string, TelemetryRecord>()
+      for (const r of telData) {
+        const existing = byDevice.get(r.Source)
+        if (!existing ||
+            new Date(r.Timestamp).getTime() > new Date(existing.Timestamp).getTime()) {
+          byDevice.set(r.Source, r)
         }
-
-        const now = new Date()
-        const rows: DeviceRow[] = []
-        const arr = Array.from(byDevice.values())
-        for (let i = 0; i < arr.length; i++) {
-          const r = arr[i]
-          const seenAt = new Date(r.Timestamp)
-          const ageMin = Math.round((now.getTime() - seenAt.getTime()) / 60000)
-          rows.push({
-            source:   r.Source,
-            type:     inferType(r.InfraType, r.Source),
-            wattage:  Number(r.Actual_Wattage) || 0,
-            grid:     r.GridID || 'AB',
-            gCO2e:    Number(r.gCO2e) || 0,
-            lastSeen: seenAt,
-            ageMin,
-          })
-        }
-        rows.sort((a, b) => a.ageMin - b.ageMin)
-        setDevices(rows)
-
-        const sumG = telData.reduce((acc, r) => acc + (Number(r.gCO2e) || 0), 0)
-        setCarbon24h(sumG / 1000)
-      } else {
-        anyError = true
       }
 
-      const gridRes = await fetch(`${API_BASE}/api/grid-status`)
-      if (gridRes.ok) {
-        const gridData: GridRow[] = await gridRes.json()
-        const ordered = ['AB', 'BC', 'ON', 'QC'].map(g =>
-          gridData.find(d => d.GridID === g) || { GridID: g })
-        setGrids(ordered)
-      } else {
-        anyError = true
-      }
+      const now = new Date()
+      const rows: DeviceRow[] = Array.from(byDevice.values()).map(r => {
+        const seenAt = new Date(r.Timestamp)
+        const ageMin = Math.round((now.getTime() - seenAt.getTime()) / 60000)
+        return {
+          source:   r.Source,
+          type:     inferType(r.InfraType, r.Source),
+          wattage:  Number(r.Actual_Wattage) || 0,
+          grid:     r.GridID || 'AB',
+          gCO2e:    Number(r.gCO2e) || 0,
+          lastSeen: seenAt,
+          ageMin,
+        }
+      }).sort((a, b) => a.ageMin - b.ageMin)
+      setDevices(rows)
+
+      const sumG = telData.reduce((acc, r) => acc + (Number(r.gCO2e) || 0), 0)
+      setCarbon(sumG / 1000)
+
+      // Grid status
+      const gridData = await getLiveGridData()
+      const ordered = ['AB', 'BC', 'ON', 'QC'].map(g =>
+        gridData.find(d => d.GridID === g) || { GridID: g } as GridSnapshot)
+      setGrids(ordered)
+      if (gridData.length === 0) anyError = true
 
       setLastUpdate(new Date())
-      setErr(anyError ? 'Some endpoints did not respond' : null)
+      setErr(anyError ? 'One or more endpoints returned no data — check API and network' : null)
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'network error')
+      console.error('Monitor load failed:', e)
+      setErr(e instanceof Error ? e.message : 'Network error — check browser console')
     } finally {
       setLoading(false)
     }
@@ -164,6 +145,7 @@ export default function MonitorPage() {
           </div>
         )}
 
+        {/* Header */}
         <div className="flex items-start justify-between">
           <div>
             <h1 className="text-xl font-bold text-white flex items-center gap-2">
@@ -188,13 +170,14 @@ export default function MonitorPage() {
           </div>
         </div>
 
+        {/* KPI cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
             <div className="text-xs text-gw-muted uppercase tracking-wider mb-2">
               Net Carbon (recent)
             </div>
             <div className="text-2xl font-bold text-gw-green font-mono">
-              {carbon24h.toFixed(4)} <span className="text-sm text-gw-muted">kgCO₂e</span>
+              {carbonRecent.toFixed(4)} <span className="text-sm text-gw-muted">kgCO₂e</span>
             </div>
             <div className="text-xs text-gw-muted mt-1">
               Sum across {totalRecords.toLocaleString()} ledger records
@@ -221,16 +204,19 @@ export default function MonitorPage() {
               {totalRecords.toLocaleString()}
             </div>
             <div className="text-xs text-gw-muted mt-1">
-              All-time for this tenant
+              Returned by API
             </div>
           </div>
         </div>
 
+        {/* Carbon Trend Sparkline — its OWN panel (was nested in h2; now fixed) */}
+        <CarbonTrendSparkline records={rawRecords} bucketMinutes={60} buckets={24} />
+
+        {/* Active Device Stream */}
         <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-white flex items-center gap-2">
               <Server className="w-4 h-4 text-gw-green" />
-              <CarbonTrendSparkline records={rawRecords} bucketMinutes={60} buckets={24} />
               Active Device Stream
               <span className="ml-2 text-xs border border-gw-green/30 text-gw-green px-2 py-0.5 rounded">
                 {devices.length} nodes
@@ -291,6 +277,7 @@ export default function MonitorPage() {
           )}
         </div>
 
+        {/* Provincial Grid Health */}
         <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-semibold text-white flex items-center gap-2">
@@ -306,9 +293,11 @@ export default function MonitorPage() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
               {grids.map(g => {
-                const cls = classify(g.CurrentIntensity)
+                const intensity = g.CurrentIntensity ?? g.CarbonIntensity
+                const cls = classify(intensity)
                 const meta = PROVINCES[g.GridID] || { name: g.GridID, operator: '' }
-                const isFallback = !g.Source || g.Source.includes('FALLBACK') || g.Source === 'fallback'
+                const isFallback = !g.Source || (typeof g.Source === 'string' &&
+                                    (g.Source.includes('FALLBACK') || g.Source === 'fallback'))
                 return (
                   <div key={g.GridID} className="bg-gw-dark border border-gw-border rounded-lg p-4">
                     <div className="flex items-start justify-between">
@@ -319,16 +308,14 @@ export default function MonitorPage() {
                       </div>
                       <div className="text-right">
                         <div className="text-2xl font-bold text-white font-mono">
-                          {g.CurrentIntensity != null
-                            ? Number(g.CurrentIntensity).toFixed(0)
-                            : '—'}
+                          {intensity != null ? Number(intensity).toFixed(0) : '—'}
                         </div>
                       </div>
                     </div>
                     <div className="mt-3 flex items-center gap-2">
                       <span className="w-2 h-2 rounded-full" style={{ backgroundColor: cls.color }} />
                       <span className="text-xs font-medium" style={{ color: cls.color }}>{cls.label}</span>
-                      {isFallback && g.CurrentIntensity != null && (
+                      {isFallback && intensity != null && (
                         <span className="ml-auto text-[10px] text-amber-400 font-medium border border-amber-400/30 px-1.5 py-0.5 rounded">
                           FALLBACK
                         </span>
@@ -340,7 +327,7 @@ export default function MonitorPage() {
             </div>
           )}
           <p className="text-xs text-gw-muted mt-4">
-            Optimal: &lt;100 · Warning: 100–300 · Critical: &gt;300 gCO₂/kWh (global standard) ·
+            Optimal: &lt;100 · Warning: 100–300 · Critical: &gt;300 gCO₂/kWh ·
             <span className="text-gw-green ml-1">Incident thresholds configured per-grid in Settings</span>
           </p>
         </div>
