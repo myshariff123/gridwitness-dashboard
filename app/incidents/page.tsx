@@ -1,4 +1,6 @@
 'use client'
+import { Download } from 'lucide-react'
+import { toCsv, downloadCsv, tsFilename } from '@/lib/csv'
 import { useState, useEffect } from 'react'
 import Nav from '@/components/Nav'
 import IncidentActions from '@/components/IncidentActions'
@@ -35,6 +37,23 @@ export default function IncidentsPage() {
     return () => clearInterval(interval)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter])
+const exportCsv = () => {
+  const csv = toCsv(incidents, [
+    { key: 'IncidentID',   label: 'Incident ID' },
+    { key: 'GridID',       label: 'Grid' },
+    { key: 'Metric',       label: 'Metric' },
+    { key: 'Status',       label: 'Status' },
+    { key: 'Severity',     label: 'Severity' },
+    { key: 'BreachValue',  label: 'Breach Value' },
+    { key: 'PeakValue',    label: 'Peak Value' },
+    { key: 'Threshold',    label: 'Threshold' },
+    { key: 'OpenedAt',     label: 'Opened At (UTC)' },
+    { key: 'ClosedAt',     label: 'Closed At (UTC)' },
+    { key: 'LastAction',   label: 'Last Action' },
+    { key: 'LastActionAt', label: 'Last Action At (UTC)' },
+  ])
+  downloadCsv(tsFilename('incidents', TENANT_ID), csv)
+}
 
   const openCount   = incidents.filter(i => i.Status === 'OPEN').length
   const closedCount = incidents.filter(i => i.Status === 'CLOSED').length
@@ -60,6 +79,12 @@ export default function IncidentsPage() {
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </button>
+          <button onClick={exportCsv}
+  disabled={incidents.length === 0}
+  className="flex items-center gap-2 text-xs border border-gw-border text-gw-muted px-3 py-1.5 rounded hover:border-gw-green hover:text-gw-green transition-colors disabled:opacity-50">
+  <Download className="w-3.5 h-3.5" />
+  Export CSV
+</button>
         </div>
 
         {/* Counters */}
