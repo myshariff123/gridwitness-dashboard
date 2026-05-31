@@ -97,6 +97,10 @@ export default function SettingsPage() {
         />
         <AwsAutoDiscoverySection tenantId={tenantId} setToast={setToast} />
         <AgentScriptsSection tenantId={tenantId} />
+        <WebhookSection  tenantId={tenantId} />
+        <ApiKeysSection  tenantId={tenantId} />
+        <TeamSection     tenantId={tenantId} />
+        <BrandingSection tenantId={tenantId} />
         <NotificationsSection />
         <ApiReferenceSection tenantId={tenantId} />
 
