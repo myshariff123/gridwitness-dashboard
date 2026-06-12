@@ -24,17 +24,19 @@ interface DeviceRow {
   ageMin:   number
 }
 
-const PROVINCES: Record<string, { name: string; operator: string }> = {
-  AB: { name: 'Alberta',          operator: 'AESO'     },
-  ON: { name: 'Ontario',          operator: 'IESO'     },
+const AB_GRID = { name: 'Alberta', operator: 'AESO' }
+
+const OTHER_PROVINCES: Record<string, { name: string; operator: string }> = {
   BC: { name: 'British Columbia', operator: 'BC Hydro' },
-  QC: { name: 'Québec',           operator: 'Hydro-QC' },
+  ON: { name: 'Ontario',          operator: 'IESO'     },
+  QC: { name: 'Quebec',           operator: 'Hydro-QC' },
 }
 
+// Alberta-specific thresholds: AB grid runs 400-700 gCO2/kWh (coal/gas heavy)
 function classify(intensity: number | undefined): { label: string; color: string } {
   if (intensity == null) return { label: 'UNKNOWN',  color: '#8b949e' }
-  if (intensity < 100)   return { label: 'OPTIMAL',  color: '#21de9a' }
-  if (intensity < 300)   return { label: 'WARNING',  color: '#f59e0b' }
+  if (intensity < 400)   return { label: 'OPTIMAL',  color: '#21de9a' }
+  if (intensity < 600)   return { label: 'WARNING',  color: '#f59e0b' }
   return                       { label: 'CRITICAL', color: '#ef4444' }
 }
 
@@ -110,7 +112,7 @@ export default function MonitorPage() {
       const sumG = telData.reduce((acc, r) => acc + (Number(r.gCO2e) || 0), 0)
       setCarbon(sumG / 1000)
 
-      // Grid status
+      // Grid status — AB first
       const gridData = await getLiveGridData()
       const ordered = ['AB', 'BC', 'ON', 'QC'].map(g =>
         gridData.find(d => d.GridID === g) || { GridID: g } as GridSnapshot)
@@ -277,58 +279,95 @@ export default function MonitorPage() {
           )}
         </div>
 
-        {/* Provincial Grid Health */}
+        {/* Alberta Grid — Primary Focus */}
+        {(() => {
+          const abGrid = grids.find(g => g.GridID === 'AB')
+          const intensity = abGrid ? (abGrid.CurrentIntensity ?? abGrid.CarbonIntensity) : undefined
+          const cls = classify(intensity)
+          const isFallback = abGrid && (!abGrid.Source || (typeof abGrid.Source === 'string' &&
+            abGrid.Source.includes('FALLBACK')))
+          return (
+            <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="font-semibold text-white flex items-center gap-2">
+                  <Zap className="w-4 h-4 text-gw-green" />
+                  Alberta Grid (AESO)
+                  <span className="ml-2 text-xs border border-gw-green/30 text-gw-green px-2 py-0.5 rounded">
+                    Live · gCO2/kWh
+                  </span>
+                </h2>
+                {isFallback && (
+                  <span className="text-xs text-amber-400 border border-amber-400/30 px-2 py-0.5 rounded">
+                    FALLBACK BASELINE
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-8">
+                <div>
+                  <div className="text-5xl font-bold font-mono" style={{ color: cls.color }}>
+                    {intensity != null ? Number(intensity).toFixed(0) : '—'}
+                  </div>
+                  <div className="text-sm text-gw-muted mt-1">gCO2/kWh</div>
+                </div>
+                <div className="flex-1 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-3 h-3 rounded-full" style={{ backgroundColor: cls.color }} />
+                    <span className="font-semibold text-lg" style={{ color: cls.color }}>{cls.label}</span>
+                  </div>
+                  <div className="text-xs text-gw-muted space-y-1">
+                    <div>Below 400 gCO2/kWh — Optimal (renewable-heavy generation)</div>
+                    <div>400–600 gCO2/kWh — Warning (natural gas dominant)</div>
+                    <div>Above 600 gCO2/kWh — Critical (coal generation peak)</div>
+                  </div>
+                </div>
+                <div className="text-right text-xs text-gw-muted">
+                  <div>Operator: AESO</div>
+                  <div className="mt-1">Region: ca-west-1</div>
+                  <div className="mt-1">Regulation: AER + ERCB</div>
+                </div>
+              </div>
+              <p className="text-xs text-gw-muted mt-4 border-t border-gw-border pt-3">
+                Alberta data centres are subject to AER reporting requirements.
+                GridWitness provides OSFI B-15 and Bill C-59 compliant audit trails for Alberta operators. ·
+                <span className="text-gw-green ml-1">Thresholds configurable in Settings</span>
+              </p>
+            </div>
+          )
+        })()}
+
+        {/* Other Canadian Regions — Expansion */}
         <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold text-white flex items-center gap-2">
-              <Zap className="w-4 h-4 text-gw-green" />
-              Provincial Grid Health
-              <span className="ml-2 text-xs border border-gw-green/30 text-gw-green px-2 py-0.5 rounded">
-                Live · gCO₂/kWh
-              </span>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="font-semibold text-white text-sm flex items-center gap-2">
+              <Zap className="w-4 h-4 text-gw-muted" />
+              Other Canadian Regions
             </h2>
+            <span className="text-xs text-gw-muted border border-gw-border px-2 py-0.5 rounded">
+              Available for multi-region clients
+            </span>
           </div>
-          {grids.length === 0 ? (
-            <div className="text-sm text-gw-muted py-4">Grid status not available.</div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
-              {grids.map(g => {
-                const intensity = g.CurrentIntensity ?? g.CarbonIntensity
-                const cls = classify(intensity)
-                const meta = PROVINCES[g.GridID] || { name: g.GridID, operator: '' }
-                const isFallback = !g.Source || (typeof g.Source === 'string' &&
-                                    (g.Source.includes('FALLBACK') || g.Source === 'fallback'))
-                return (
-                  <div key={g.GridID} className="bg-gw-dark border border-gw-border rounded-lg p-4">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <div className="text-xs text-gw-muted font-mono">{g.GridID}</div>
-                        <div className="font-semibold text-white text-sm">{meta.name}</div>
-                        <div className="text-xs text-gw-muted">{meta.operator}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-2xl font-bold text-white font-mono">
-                          {intensity != null ? Number(intensity).toFixed(0) : '—'}
-                        </div>
-                      </div>
+          <div className="grid grid-cols-3 gap-3">
+            {grids.filter(g => g.GridID !== 'AB').map(g => {
+              const intensity = g.CurrentIntensity ?? g.CarbonIntensity
+              const meta = OTHER_PROVINCES[g.GridID] || { name: g.GridID, operator: '' }
+              return (
+                <div key={g.GridID} className="bg-gw-dark border border-gw-border/50 rounded-lg p-3 opacity-70">
+                  <div className="flex justify-between items-start">
+                    <div>
+                      <div className="text-xs font-mono text-gw-muted">{g.GridID}</div>
+                      <div className="text-sm text-white">{meta.name}</div>
+                      <div className="text-xs text-gw-muted">{meta.operator}</div>
                     </div>
-                    <div className="mt-3 flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full" style={{ backgroundColor: cls.color }} />
-                      <span className="text-xs font-medium" style={{ color: cls.color }}>{cls.label}</span>
-                      {isFallback && intensity != null && (
-                        <span className="ml-auto text-[10px] text-amber-400 font-medium border border-amber-400/30 px-1.5 py-0.5 rounded">
-                          FALLBACK
-                        </span>
-                      )}
+                    <div className="font-mono text-white font-bold">
+                      {intensity != null ? Number(intensity).toFixed(0) : '—'}
                     </div>
                   </div>
-                )
-              })}
-            </div>
-          )}
-          <p className="text-xs text-gw-muted mt-4">
-            Optimal: &lt;100 · Warning: 100–300 · Critical: &gt;300 gCO₂/kWh ·
-            <span className="text-gw-green ml-1">Incident thresholds configured per-grid in Settings</span>
+                </div>
+              )
+            })}
+          </div>
+          <p className="text-xs text-gw-muted mt-3">
+            GridWitness can extend compliance coverage to BC, ON, and QC data centres. Contact us to expand your reporting scope.
           </p>
         </div>
 

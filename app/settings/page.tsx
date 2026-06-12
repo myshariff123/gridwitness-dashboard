@@ -208,9 +208,9 @@ function ThresholdSection({
 
   const dirty = thresholds && original &&
     JSON.stringify(thresholds) !== JSON.stringify(original)
-  const grids = ['AB', 'ON', 'BC', 'QC'] as const
+  const grids = ['AB'] as const
   const metrics: Array<[keyof ThresholdSet, string, string]> = [
-    ['carbon', 'Carbon', 'gCO₂e/kWh'],
+    ['carbon', 'Carbon', 'gCO2/kWh'],
     ['load',   'Load',   '% capacity'],
     ['price',  'Price',  '$/MWh'],
   ]

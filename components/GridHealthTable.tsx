@@ -11,7 +11,13 @@ interface LocalGridEntry {
   status:    'optimal' | 'warning' | 'critical'
 }
 
-function getStatus(intensity: number): LocalGridEntry['status'] {
+// Alberta-specific thresholds (AB grid is coal/gas heavy, runs 400-700 gCO2/kWh)
+function getStatus(gridId: string, intensity: number): LocalGridEntry['status'] {
+  if (gridId === 'AB') {
+    if (intensity < 400) return 'optimal'
+    if (intensity < 600) return 'warning'
+    return 'critical'
+  }
   if (intensity < 100) return 'optimal'
   if (intensity < 300) return 'warning'
   return 'critical'
@@ -30,7 +36,7 @@ const statusLabels = {
 }
 
 const PROVINCE_NAMES: Record<string, string> = {
-  AB: 'Alberta', ON: 'Ontario', BC: 'British Columbia', QC: 'Québec'
+  AB: 'Alberta', ON: 'Ontario', BC: 'British Columbia', QC: 'Quebec'
 }
 const PROVINCE_SOURCES: Record<string, string> = {
   AB: 'AESO', ON: 'IESO', BC: 'BC Hydro', QC: 'Hydro-QC'
@@ -47,7 +53,7 @@ export default function GridHealthTable({ loading }: { loading: boolean }) {
         province:  PROVINCE_NAMES[g.GridID]  ?? g.GridID,
         source:    PROVINCE_SOURCES[g.GridID] ?? 'Grid',
         intensity: g.CarbonIntensity,
-        status:    getStatus(g.CarbonIntensity),
+        status:    getStatus(g.GridID, g.CarbonIntensity),
       }))
       setGrids(mapped)
     }
@@ -89,9 +95,9 @@ export default function GridHealthTable({ loading }: { loading: boolean }) {
       )}
 
     <p className="text-xs text-gw-muted mt-3">
-  Optimal: &lt;100 · Warning: 100–300 · Critical: &gt;300 gCO₂/kWh (global standard) ·
-  <span className="text-gw-green ml-1">Incident thresholds are configured per-grid in Settings</span>
-</p>
+      Alberta: Optimal &lt;400 · Warning 400-600 · Critical &gt;600 gCO2/kWh ·
+      <span className="text-gw-green ml-1">Thresholds configurable in Settings</span>
+    </p>
     </div>
   )
 }
