@@ -7,20 +7,27 @@ import IncidentActions from '@/components/IncidentActions'
 import { listIncidents, recordIncidentAction, closeIncident, type Incident } from '@/lib/api'
 import { AlertTriangle, CheckCircle, Clock, Shield, RefreshCw, Filter } from 'lucide-react'
 
-const TENANT_ID = 'GW-NIMBL-AEB47A92'
-
 type FilterMode = 'all' | 'open' | 'closed'
 
 export default function IncidentsPage() {
+  const [tenantId,  setTenantId]  = useState('GW-NIMBL-AEB47A92')
   const [incidents, setIncidents] = useState<Incident[]>([])
   const [loading,   setLoading]   = useState(true)
   const [filter,    setFilter]    = useState<FilterMode>('all')
   const [lastFetch, setLastFetch] = useState<Date>(new Date())
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const url = new URLSearchParams(window.location.search)
+    setTenantId(url.get('tenant_id') ||
+                window.localStorage.getItem('gw_tenant_id') ||
+                'GW-NIMBL-AEB47A92')
+  }, [])
+
   const load = async () => {
     setLoading(true)
     try {
-      const data = await listIncidents(TENANT_ID,
+      const data = await listIncidents(tenantId,
         filter === 'all' ? undefined : (filter === 'open' ? 'OPEN' : 'CLOSED'))
       setIncidents(data)
       setLastFetch(new Date())
@@ -36,31 +43,32 @@ export default function IncidentsPage() {
     const interval = setInterval(load, 30000)  // refresh every 30s
     return () => clearInterval(interval)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter])
-const exportCsv = () => {
-  const csv = toCsv(incidents, [
-    { key: 'IncidentID',   label: 'Incident ID' },
-    { key: 'GridID',       label: 'Grid' },
-    { key: 'Metric',       label: 'Metric' },
-    { key: 'Status',       label: 'Status' },
-    { key: 'Severity',     label: 'Severity' },
-    { key: 'BreachValue',  label: 'Breach Value' },
-    { key: 'PeakValue',    label: 'Peak Value' },
-    { key: 'Threshold',    label: 'Threshold' },
-    { key: 'OpenedAt',     label: 'Opened At (UTC)' },
-    { key: 'ClosedAt',     label: 'Closed At (UTC)' },
-    { key: 'LastAction',   label: 'Last Action' },
-    { key: 'LastActionAt', label: 'Last Action At (UTC)' },
-  ])
-  downloadCsv(tsFilename('incidents', TENANT_ID), csv)
-}
+  }, [filter, tenantId])
+
+  const exportCsv = () => {
+    const csv = toCsv(incidents, [
+      { key: 'IncidentID',   label: 'Incident ID' },
+      { key: 'GridID',       label: 'Grid' },
+      { key: 'Metric',       label: 'Metric' },
+      { key: 'Status',       label: 'Status' },
+      { key: 'Severity',     label: 'Severity' },
+      { key: 'BreachValue',  label: 'Breach Value' },
+      { key: 'PeakValue',    label: 'Peak Value' },
+      { key: 'Threshold',    label: 'Threshold' },
+      { key: 'OpenedAt',     label: 'Opened At (UTC)' },
+      { key: 'ClosedAt',     label: 'Closed At (UTC)' },
+      { key: 'LastAction',   label: 'Last Action' },
+      { key: 'LastActionAt', label: 'Last Action At (UTC)' },
+    ])
+    downloadCsv(tsFilename('incidents', tenantId), csv)
+  }
 
   const openCount   = incidents.filter(i => i.Status === 'OPEN').length
   const closedCount = incidents.filter(i => i.Status === 'CLOSED').length
 
   return (
     <div className="min-h-screen bg-gw-dark">
-      <Nav tenantId={TENANT_ID} />
+      <Nav tenantId={tenantId} />
 
       <div className="max-w-6xl mx-auto px-4 py-8 space-y-6">
 
