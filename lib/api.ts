@@ -98,14 +98,24 @@ function unwrapList(raw: unknown): Array<Record<string, unknown>> {
 // ──────────────────────────────────────────────────────────────────────────
 // Telemetry — live records  (THE FIX: handles both shapes + both names)
 // ──────────────────────────────────────────────────────────────────────────
-export async function getLiveTelemetry(tenantId: string): Promise<TelemetryRecord[]> {
+export async function getLiveTelemetry(
+  tenantId: string,
+): Promise<{ records: TelemetryRecord[]; totalInLedger: number }> {
   try {
     const raw = await gwFetch<unknown>(
       `/api/telemetry/live?tenant_id=${encodeURIComponent(tenantId)}`)
 
-    const list = unwrapList(raw)
+    // Extract total_in_ledger before unwrapping the array
+    let totalInLedger = 0
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      const obj = raw as Record<string, unknown>
+      if (typeof obj.total_in_ledger === 'number') totalInLedger = obj.total_in_ledger
+    }
 
-    return list.map(r => {
+    const list = unwrapList(raw)
+    if (totalInLedger === 0) totalInLedger = list.length
+
+    const records = list.map(r => {
       const wattage = Number(r.Actual_Wattage ?? r.ActualWattage ?? 0)
       const carbon  = Number(r.gCO2e ?? r.CarbonDebt_gCO2 ?? 0)
       const ts      = String(r.Timestamp ?? r.SealedAt ?? '')
@@ -135,9 +145,10 @@ export async function getLiveTelemetry(tenantId: string): Promise<TelemetryRecor
         SealedAt:         ts,
       } as TelemetryRecord
     })
+    return { records, totalInLedger }
   } catch (e) {
     console.error('getLiveTelemetry failed:', e)
-    return []
+    return { records: [], totalInLedger: 0 }
   }
 }
 
@@ -202,13 +213,18 @@ export async function closeIncident(
 export async function generateReport(
   tenantId: string, dateFrom: string, dateTo: string, frameworks: string[],
 ): Promise<{ ok: boolean; message?: string }> {
-  return gwFetch<{ ok: boolean; message?: string }>(`/api/reports/generate`, {
+  // API Gateway SQS integration returns XML — handle without JSON parsing
+  const r = await fetch(`${API_BASE}/api/reports/generate`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       tenant_id: tenantId, date_from: dateFrom, date_to: dateTo,
       format: 'PDF', frameworks,
     }),
+    cache: 'no-store',
   })
+  if (!r.ok) throw new Error(`HTTP ${r.status} — report queue failed`)
+  return { ok: true, message: 'Report queued for generation' }
 }
 
 export async function getLatestReport(tenantId: string): Promise<{

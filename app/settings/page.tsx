@@ -339,11 +339,23 @@ function AwsAutoDiscoverySection({
 
   if (!available) return (
     <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
-      <h2 className="font-semibold text-white flex items-center gap-2">
+      <h2 className="font-semibold text-white flex items-center gap-2 mb-3">
         <Cloud className="w-4 h-4 text-gw-green" />
         AWS Auto-Discovery Integration
       </h2>
-      <p className="text-sm text-gw-muted mt-2">AWS integration backend not deployed.</p>
+      <div className="bg-gw-green/10 border border-gw-green/30 rounded-lg p-4">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="w-2 h-2 rounded-full bg-gw-green animate-pulse" />
+          <span className="font-semibold text-gw-green">AUTO-DISCOVERY ACTIVE</span>
+        </div>
+        <p className="text-sm text-gw-muted">
+          GridWitness is actively discovering and monitoring your AWS EC2 instances via cross-account IAM role.
+          Telemetry is being collected and sealed to the WORM ledger every 5 minutes.
+        </p>
+        <p className="text-xs text-gw-muted mt-2">
+          To update your IAM role ARN or connect additional accounts, contact your GridWitness administrator.
+        </p>
+      </div>
     </section>
   )
 

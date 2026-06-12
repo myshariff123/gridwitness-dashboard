@@ -284,8 +284,8 @@ export default function CompliancePage() {
           <h3 className="text-white font-semibold mb-2">About the Report</h3>
           <ul className="space-y-1.5 text-xs">
             <li>• Every telemetry record is SHA-256 hashed and linked in an immutable Merkle chain</li>
-            <li>• The full chain root appears on the cover page — verifiable at <code className="text-gw-green">/verify</code></li>
-            <li>• PDFs are stored in AWS S3 with Object Lock COMPLIANCE for 7 years (OSFI B-15 §5.3)</li>
+            <li>• The full chain root appears on the cover page — verifiable at <a href="/verify" className="text-gw-green hover:underline">/verify</a></li>
+            <li>• PDFs are stored in AWS S3 with Object Lock COMPLIANCE for 7 years (OSFI B-15 Sec.5.3)</li>
             <li>• Data residency: AWS ca-central-1 (Montreal) — Canadian sovereign region</li>
             <li>• Encryption: AES-256 at rest, TLS 1.3 in transit</li>
           </ul>

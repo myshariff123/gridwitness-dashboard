@@ -63,6 +63,7 @@ export default function MonitorPage() {
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date())
   const [err, setErr]               = useState<string | null>(null)
   const [rawRecords, setRawRecords] = useState<TelemetryRecord[]>([])
+  const [totalInLedger, setTotalInLedger] = useState<number | null>(null)
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -77,8 +78,9 @@ export default function MonitorPage() {
     let anyError = false
     try {
       // Use envelope-aware lib/api.ts — handles {records:[...]} OR flat array
-      const telData = await getLiveTelemetry(tenantId)
-      setTotal(telData.length)
+      const { records: telData, totalInLedger: ledgerTotal } = await getLiveTelemetry(tenantId)
+      setTotal(ledgerTotal || telData.length)
+      setTotalInLedger(ledgerTotal)
       setRawRecords(telData)
 
       if (telData.length === 0) anyError = true
@@ -206,7 +208,7 @@ export default function MonitorPage() {
               {totalRecords.toLocaleString()}
             </div>
             <div className="text-xs text-gw-muted mt-1">
-              Returned by API
+              {totalInLedger && totalInLedger > 0 ? 'Total in WORM ledger' : 'Returned by API'}
             </div>
           </div>
         </div>
