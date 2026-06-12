@@ -9,7 +9,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import Nav from '@/components/Nav'
 import {
   Settings as SettingsIcon, Save, Cloud, Bell, Code,
-  AlertCircle, ExternalLink, Copy, Loader, Shield
+  AlertCircle, ExternalLink, Copy, Loader, Shield, Zap, CheckCircle,
 } from 'lucide-react'
 
 const API_BASE   = process.env.NEXT_PUBLIC_API_URL ||
@@ -91,6 +91,7 @@ export default function SettingsPage() {
         )}
 
         <TenantInfoSection tenantId={tenantId} />
+        <AesoApiSection />
         <ThresholdSection
           tenantId={tenantId}
           registerSave={fn => { thresholdSaveRef.current = fn }}
@@ -106,6 +107,134 @@ export default function SettingsPage() {
 
       </div>
     </div>
+  )
+}
+
+function AesoApiSection() {
+  const [gridQuality, setGridQuality] = useState<string | null>(null)
+  const [gridSource,  setGridSource]  = useState<string | null>(null)
+  const [copied, setCopied] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/grid-status`, { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then((data) => {
+        const list = Array.isArray(data) ? data : (data?.grids || data?.records || [])
+        const ab = list.find((g: Record<string, unknown>) => g.GridID === 'AB')
+        if (ab) {
+          setGridQuality(String(ab.DataQuality || ab.data_quality || 'UNKNOWN'))
+          setGridSource(String(ab.Source || ab.source || ''))
+        }
+      })
+      .catch(() => {})
+  }, [])
+
+  function copy(text: string, key: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(key); setTimeout(() => setCopied(null), 2000)
+    })
+  }
+
+  const isLive = gridQuality?.includes('LIVE') || gridQuality?.includes('AESO')
+
+  const qualityColor = isLive
+    ? 'text-gw-green bg-gw-green/10 border-gw-green/30'
+    : gridQuality?.includes('TIME')
+    ? 'text-amber-400 bg-amber-400/10 border-amber-400/30'
+    : 'text-gw-muted bg-gw-dark border-gw-border'
+
+  return (
+    <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
+      <h2 className="font-semibold text-white flex items-center gap-2 mb-2">
+        <Zap className="w-4 h-4 text-gw-green" />
+        Alberta Grid Data Source (AESO)
+      </h2>
+      <p className="text-sm text-gw-muted mb-4">
+        GridWitness reads Alberta carbon intensity from AESO. Configure an API key for live data.
+      </p>
+
+      {/* Current status */}
+      <div className="flex items-center gap-3 mb-5 p-3 bg-gw-dark rounded-lg border border-gw-border">
+        <div className="flex-1">
+          <div className="text-xs text-gw-muted uppercase tracking-wider mb-1">Current Data Quality</div>
+          <div className="flex items-center gap-2">
+            {isLive
+              ? <CheckCircle className="w-4 h-4 text-gw-green" />
+              : <AlertCircle className="w-4 h-4 text-amber-400" />}
+            <span className={`text-xs font-mono border px-2 py-0.5 rounded ${qualityColor}`}>
+              {gridQuality || 'Loading…'}
+            </span>
+            {gridSource && <span className="text-xs text-gw-muted">via {gridSource}</span>}
+          </div>
+        </div>
+        {!isLive && (
+          <div className="text-xs text-amber-400 text-right">
+            Configure an API key<br />below for live data
+          </div>
+        )}
+      </div>
+
+      {/* Option 1: AESO API */}
+      <div className="space-y-3 mb-4">
+        <div className="bg-gw-dark border border-gw-border rounded-lg p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div className="font-medium text-white text-sm">Option 1: AESO Pool Price & CSD API</div>
+            <span className="text-xs text-gw-muted border border-gw-border px-2 py-0.5 rounded">Commercial</span>
+          </div>
+          <p className="text-xs text-gw-muted mb-3">
+            Provides real-time pool price and generation-by-fuel data. Requires registration with AESO.
+            Apply at <a href="https://www.aeso.ca/market/market-and-system-reporting/data-requests/" target="_blank" rel="noopener noreferrer" className="text-gw-green hover:underline">aeso.ca → Data Requests</a>.
+          </p>
+          <div className="text-xs text-gw-muted mb-2">Once you have a key, run this on the server:</div>
+          <div className="relative">
+            <pre className="bg-black/60 border border-gw-border rounded p-3 text-xs font-mono text-gw-green overflow-x-auto pr-10">
+{`aws lambda update-function-configuration \\
+  --function-name gw-grid-oracle-lambda-staging \\
+  --environment 'Variables={GRID_CACHE_TABLE=gw-grid-cache-staging,AESO_API_KEY=YOUR_KEY_HERE}' \\
+  --region ca-central-1`}
+            </pre>
+            <button
+              onClick={() => copy('aws lambda update-function-configuration \\\n  --function-name gw-grid-oracle-lambda-staging \\\n  --environment \'Variables={GRID_CACHE_TABLE=gw-grid-cache-staging,AESO_API_KEY=YOUR_KEY_HERE}\' \\\n  --region ca-central-1', 'aeso')}
+              className="absolute top-2 right-2 p-1.5 rounded bg-gw-border hover:bg-gw-green/20"
+            >
+              {copied === 'aeso' ? <CheckCircle className="w-3.5 h-3.5 text-gw-green" /> : <Copy className="w-3.5 h-3.5 text-gw-muted" />}
+            </button>
+          </div>
+        </div>
+
+        {/* Option 2: Electricity Maps */}
+        <div className="bg-gw-dark border border-gw-border rounded-lg p-4">
+          <div className="flex items-center justify-between mb-2">
+            <div className="font-medium text-white text-sm">Option 2: Electricity Maps (CA-AB zone)</div>
+            <span className="text-xs text-gw-green border border-gw-green/30 bg-gw-green/10 px-2 py-0.5 rounded">Free tier</span>
+          </div>
+          <p className="text-xs text-gw-muted mb-3">
+            Free tier: 10 requests/hour. Register at <a href="https://api.electricitymap.org/free-tier" target="_blank" rel="noopener noreferrer" className="text-gw-green hover:underline">api.electricitymap.org/free-tier</a>.
+            Covers Alberta (zone: CA-AB) with real carbon intensity data.
+          </p>
+          <div className="text-xs text-gw-muted mb-2">Set your token:</div>
+          <div className="relative">
+            <pre className="bg-black/60 border border-gw-border rounded p-3 text-xs font-mono text-gw-green overflow-x-auto pr-10">
+{`aws lambda update-function-configuration \\
+  --function-name gw-grid-oracle-lambda-staging \\
+  --environment 'Variables={GRID_CACHE_TABLE=gw-grid-cache-staging,ELECTRICITY_MAPS_TOKEN=YOUR_TOKEN}' \\
+  --region ca-central-1`}
+            </pre>
+            <button
+              onClick={() => copy('aws lambda update-function-configuration \\\n  --function-name gw-grid-oracle-lambda-staging \\\n  --environment \'Variables={GRID_CACHE_TABLE=gw-grid-cache-staging,ELECTRICITY_MAPS_TOKEN=YOUR_TOKEN}\' \\\n  --region ca-central-1', 'em')}
+              className="absolute top-2 right-2 p-1.5 rounded bg-gw-border hover:bg-gw-green/20"
+            >
+              {copied === 'em' ? <CheckCircle className="w-3.5 h-3.5 text-gw-green" /> : <Copy className="w-3.5 h-3.5 text-gw-muted" />}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <p className="text-xs text-gw-muted">
+        Without a key the Lambda uses a time-of-day estimate (470–580 gCO2/kWh based on Alberta historical patterns).
+        The data quality label is shown on the Monitor page.
+      </p>
+    </section>
   )
 }
 

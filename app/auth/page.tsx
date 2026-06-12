@@ -56,8 +56,8 @@ export default function AuthPage() {
 
       <p className="mt-4 text-xs text-gw-muted">
         New customer?{' '}
-        <a href="https://nimblestride.ca" className="text-gw-green hover:underline">
-          Contact sales →
+        <a href="/onboarding" className="text-gw-green hover:underline">
+          Get started free →
         </a>
       </p>
     </div>

@@ -283,11 +283,12 @@ export default function MonitorPage() {
 
         {/* Alberta Grid — Primary Focus */}
         {(() => {
-          const abGrid = grids.find(g => g.GridID === 'AB')
+          const abGrid = grids.find(g => g.GridID === 'AB') as (typeof grids[0] & { DataQuality?: string; Source?: string }) | undefined
           const intensity = abGrid ? (abGrid.CurrentIntensity ?? abGrid.CarbonIntensity) : undefined
           const cls = classify(intensity)
-          const isFallback = abGrid && (!abGrid.Source || (typeof abGrid.Source === 'string' &&
-            abGrid.Source.includes('FALLBACK')))
+          const quality: string = (abGrid as Record<string, unknown>)?.DataQuality as string || ''
+          const isLive = quality.includes('LIVE') || quality.includes('AESO')
+          const isFallback = !isLive
           return (
             <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
               <div className="flex items-center justify-between mb-4">
@@ -298,11 +299,12 @@ export default function MonitorPage() {
                     Live · gCO2/kWh
                   </span>
                 </h2>
-                {isFallback && (
-                  <span className="text-xs text-amber-400 border border-amber-400/30 px-2 py-0.5 rounded">
-                    FALLBACK BASELINE
-                  </span>
-                )}
+                {isLive
+                  ? <span className="text-xs text-gw-green border border-gw-green/30 px-2 py-0.5 rounded">LIVE</span>
+                  : <span className="text-xs text-amber-400 border border-amber-400/30 px-2 py-0.5 rounded" title={quality}>
+                      {quality === 'TIME_ESTIMATED' ? 'TIME ESTIMATE' : 'BASELINE'}
+                    </span>
+                }
               </div>
               <div className="flex items-center gap-8">
                 <div>

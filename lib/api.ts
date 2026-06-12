@@ -52,6 +52,7 @@ export interface GridSnapshot {
   Source?:          string
   UpdatedAt?:       string
   PoolPrice?:       number
+  DataQuality?:     string
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -164,6 +165,7 @@ export async function getLiveGridData(): Promise<GridSnapshot[]> {
       GridID:           String(g.GridID ?? ''),
       CurrentIntensity: Number(g.CurrentIntensity ?? g.CarbonIntensity ?? 0),
       CarbonIntensity:  Number(g.CarbonIntensity ?? g.CurrentIntensity ?? 0),
+      DataQuality:      String(g.DataQuality ?? g.data_quality ?? ''),
     })) as GridSnapshot[]
   } catch (e) {
     console.error('getLiveGridData failed:', e)

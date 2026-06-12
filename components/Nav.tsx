@@ -75,6 +75,12 @@ export default function Nav({ tenantId: propTenantId }: NavProps = {}) {
 
         <div className="flex items-center gap-3">
           <span className="text-xs font-mono text-gw-muted hidden lg:inline">{tenantId}</span>
+          <Link
+            href="/onboarding"
+            className="text-xs border border-gw-border text-gw-muted px-2.5 py-1 rounded hover:border-gw-green hover:text-gw-green transition-colors hidden md:inline-flex items-center gap-1"
+          >
+            + New Tenant
+          </Link>
           <Link href="/auth" className="text-sm text-gw-green hover:underline">
             Sign out
           </Link>
