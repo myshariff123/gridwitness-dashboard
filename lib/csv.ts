@@ -1,7 +1,7 @@
 // lib/csv.ts — Client-side CSV export
 // Pure browser code. No backend changes.
 
-export function toCsv<T extends Record<string, unknown>>(
+export function toCsv<T extends object>(
   rows: T[],
   columns: Array<{ key: keyof T; label: string }>,
 ): string {
