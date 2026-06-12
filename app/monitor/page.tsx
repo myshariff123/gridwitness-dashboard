@@ -283,10 +283,10 @@ export default function MonitorPage() {
 
         {/* Alberta Grid — Primary Focus */}
         {(() => {
-          const abGrid = grids.find(g => g.GridID === 'AB') as (typeof grids[0] & { DataQuality?: string; Source?: string }) | undefined
+          const abGrid = grids.find(g => g.GridID === 'AB')
           const intensity = abGrid ? (abGrid.CurrentIntensity ?? abGrid.CarbonIntensity) : undefined
           const cls = classify(intensity)
-          const quality: string = (abGrid as Record<string, unknown>)?.DataQuality as string || ''
+          const quality = abGrid?.DataQuality ?? ''
           const isLive = quality.includes('LIVE') || quality.includes('AESO')
           const isFallback = !isLive
           return (
