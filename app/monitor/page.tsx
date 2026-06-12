@@ -324,10 +324,15 @@ export default function MonitorPage() {
                     <div>Above 600 gCO2/kWh — Critical (coal generation peak)</div>
                   </div>
                 </div>
-                <div className="text-right text-xs text-gw-muted">
+                <div className="text-right text-xs text-gw-muted space-y-1">
                   <div>Operator: AESO</div>
-                  <div className="mt-1">Region: ca-west-1</div>
-                  <div className="mt-1">Regulation: AER + ERCB</div>
+                  <div>Region: ca-west-1</div>
+                  {abGrid?.PoolPrice != null && Number(abGrid.PoolPrice) > 0 && (
+                    <div className="text-white font-mono">
+                      ${Number(abGrid.PoolPrice).toFixed(2)}<span className="text-gw-muted font-sans">/MWh</span>
+                    </div>
+                  )}
+                  <div className="text-gw-muted/60 text-xs">{quality || 'DATA'}</div>
                 </div>
               </div>
               <p className="text-xs text-gw-muted mt-4 border-t border-gw-border pt-3">
