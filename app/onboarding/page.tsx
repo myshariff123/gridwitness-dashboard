@@ -42,6 +42,7 @@ function CopyBlock({ value }: { value: string }) {
 }
 
 const DEPLOYMENT_TABS = [
+  { id: 'test',   label: 'Quick Test',       icon: Zap      },
   { id: 'linux',  label: 'Linux / On-Prem', icon: Terminal },
   { id: 'docker', label: 'Docker',           icon: Server   },
   { id: 'aws',    label: 'AWS EC2',          icon: Cloud    },
@@ -49,10 +50,26 @@ const DEPLOYMENT_TABS = [
 ]
 
 function DeploymentInstructions({ tenantId, grid }: { tenantId: string; grid: string }) {
-  const [tab, setTab] = useState('linux')
+  const [tab, setTab] = useState('test')
   const API = API_BASE
 
   const commands: Record<string, string> = {
+    test: `# Quick test — send one telemetry record right now (no agent needed)
+# Run this from any machine with curl to verify your tenant ID is live:
+
+curl -X POST ${API}/api/telemetry/live \\
+  -H 'Content-Type: application/json' \\
+  -d '{
+    "TenantID": "${tenantId}",
+    "Source":   "manual-test",
+    "Actual_Wattage": 450,
+    "GridID":   "${grid}",
+    "DataSource": "EDGE_AGENT"
+  }'
+
+# A 200 response means your record was accepted.
+# It will appear on the dashboard within ~10 seconds.`,
+
     linux: `# Install GridWitness Agent (Linux x86_64 / arm64)
 curl -sSL https://packages.gridwitness.ca/install.sh | sudo bash -s -- \\
   --tenant-id ${tenantId} \\
