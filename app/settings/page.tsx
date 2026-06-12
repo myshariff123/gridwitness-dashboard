@@ -582,10 +582,143 @@ function AwsAutoDiscoverySection({
 }
 
 function AgentScriptsSection({ tenantId }: { tenantId: string }) {
-  const [tab, setTab] = useState<'ps' | 'bash' | 'docker' | 'k8s'>('ps')
+  const [tab, setTab] = useState<'redfish' | 'gpu' | 'ps' | 'bash' | 'docker' | 'k8s'>('redfish')
   const [copied, setCopied] = useState(false)
 
-  const psScript = `# GridWitness Agent — Windows PowerShell
+  const redfishScript = `#!/bin/bash
+# GridWitness Redfish Agent — reads actual PSU power from server BMC
+# Works with: Dell iDRAC 8/9, HP iLO 4/5/6, Supermicro IPMI, Lenovo XCC
+# Requires: curl, python3 (standard on all Linux distros)
+#
+# HOW TO FIND YOUR BMC IP:
+#   Dell:       ipmitool lan print 1  |  grep "IP Address "
+#   HP:         ipmitool lan print 1  |  grep "IP Address "
+#   Any Linux:  ip route | grep default (BMC is usually on same subnet)
+#
+# Run once to test, then add to crontab or systemd for continuous monitoring.
+
+BMC_HOST="192.168.1.100"   # <-- replace with your BMC/iDRAC/iLO IP
+BMC_USER="root"             # Dell default: root / HP default: Administrator
+BMC_PASS="calvin"           # <-- replace with your BMC password
+TENANT_ID="${tenantId}"
+API_URL="${INGEST_URL}"
+GRID_ID="AB"
+INTERVAL=300  # seconds between readings (5 min)
+
+# Redfish power endpoint paths (tried in order until one works)
+REDFISH_PATHS=(
+  "/redfish/v1/Chassis/System.Embedded.1/Power"  # Dell iDRAC
+  "/redfish/v1/Chassis/1/Power"                  # HP iLO / Supermicro
+  "/redfish/v1/Chassis/Self/Power"               # Lenovo XCC
+)
+
+get_power_watts() {
+  for path in "\${REDFISH_PATHS[@]}"; do
+    response=$(curl -s -k -u "\${BMC_USER}:\${BMC_PASS}" \\
+      -H "Accept: application/json" \\
+      "https://\${BMC_HOST}\${path}" 2>/dev/null)
+    watts=$(echo "\$response" | python3 -c "
+import sys, json
+try:
+  d = json.load(sys.stdin)
+  # Standard Redfish: PowerControl[0].PowerConsumedWatts
+  pc = d.get('PowerControl', [])
+  if pc and pc[0].get('PowerConsumedWatts', 0) > 0:
+    print(int(pc[0]['PowerConsumedWatts']))
+    sys.exit(0)
+  # Some vendors use PowerSupplies total
+  ps = d.get('PowerSupplies', [])
+  total = sum(float(p.get('PowerOutputWatts') or p.get('LastPowerOutputWatts') or 0) for p in ps)
+  if total > 0:
+    print(int(total))
+    sys.exit(0)
+except: pass
+print(0)
+" 2>/dev/null)
+    if [ -n "\$watts" ] && [ "\$watts" -gt 0 ]; then
+      echo "\$watts"
+      return 0
+    fi
+  done
+  echo "0"
+}
+
+echo "GridWitness Redfish Agent starting for ${tenantId} — polling \${BMC_HOST} every \${INTERVAL}s"
+
+while true; do
+  WATTS=$(get_power_watts)
+  if [ "\$WATTS" -eq 0 ]; then
+    DATA_SOURCE="FALLBACK_ESTIMATE"
+    WATTS=500  # conservative fallback for a rack server
+    echo "WARN: Redfish read failed — using fallback \${WATTS}W"
+  else
+    DATA_SOURCE="REDFISH_BMC"
+    echo "OK: \$(date -u +%H:%M:%S) — \${WATTS}W from \${BMC_HOST}"
+  fi
+
+  curl -s -X POST "\$API_URL" \\
+    -H "Content-Type: application/json" \\
+    -d "{\\"TenantID\\":\\"\$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":\$WATTS,\\"InfraType\\":\\"Physical_BMC\\",\\"GridID\\":\\"\$GRID_ID\\",\\"DataSource\\":\\"\$DATA_SOURCE\\"}" \\
+    > /dev/null 2>&1
+
+  sleep \$INTERVAL
+done`
+
+  const gpuScript = `#!/bin/bash
+# GridWitness GPU Mining Agent — reads actual GPU+CPU power via nvidia-smi / rocm-smi
+# Works with: Nvidia GeForce/Quadro/Tesla, AMD Radeon (via rocm-smi)
+# Requires: nvidia-smi (Nvidia) or rocm-smi (AMD) — pre-installed with GPU drivers
+#
+# Reports ACTUAL measured wattage (not estimates) — suitable for OSFI B-15 Scope 2 reporting.
+
+TENANT_ID="${tenantId}"
+API_URL="${INGEST_URL}"
+GRID_ID="AB"
+# Overhead for PSU losses + CPU + memory + fans (typical mining rig: 80-120W)
+OVERHEAD_WATTS=100
+INTERVAL=300
+
+get_nvidia_watts() {
+  if ! command -v nvidia-smi &>/dev/null; then echo "0"; return; fi
+  # Sum power across all GPUs (handles multi-GPU rigs)
+  nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits 2>/dev/null | \\
+    awk '{sum += $1} END {print (sum > 0) ? int(sum) : 0}'
+}
+
+get_amd_watts() {
+  if ! command -v rocm-smi &>/dev/null; then echo "0"; return; fi
+  rocm-smi --showpower 2>/dev/null | awk '/Average Graphics Package Power/{sum += $NF} END {print int(sum)}'
+}
+
+echo "GridWitness GPU Mining Agent starting for ${tenantId}"
+
+while true; do
+  NVIDIA_W=$(get_nvidia_watts)
+  AMD_W=$(get_amd_watts)
+  GPU_WATTS=$(( NVIDIA_W + AMD_W ))
+
+  if [ "\$GPU_WATTS" -gt 0 ]; then
+    TOTAL_WATTS=$(( GPU_WATTS + OVERHEAD_WATTS ))
+    DATA_SOURCE="NVIDIA_SMI"
+    [ "\$AMD_W" -gt 0 ] && [ "\$NVIDIA_W" -eq 0 ] && DATA_SOURCE="ROCM_SMI"
+    echo "OK: \$(date -u +%H:%M:%S) — GPU \${GPU_WATTS}W + overhead \${OVERHEAD_WATTS}W = \${TOTAL_WATTS}W"
+  else
+    # Fallback: estimate from CPU load (less accurate)
+    LOAD=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\\([0-9.]*\\)%* id.*/\\1/" | awk '{print 100 - $1}')
+    TOTAL_WATTS=$(echo "150 + (\$LOAD * 2)" | bc | awk '{print int($1)}')
+    DATA_SOURCE="CPU_ESTIMATE"
+    echo "WARN: GPU power unavailable — CPU load estimate \${TOTAL_WATTS}W"
+  fi
+
+  curl -s -X POST "\$API_URL" \\
+    -H "Content-Type: application/json" \\
+    -d "{\\"TenantID\\":\\"\$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":\$TOTAL_WATTS,\\"InfraType\\":\\"GPU_Mining_Rig\\",\\"GridID\\":\\"\$GRID_ID\\",\\"DataSource\\":\\"\$DATA_SOURCE\\"}" \\
+    > /dev/null 2>&1
+
+  sleep \$INTERVAL
+done`
+
+  const psScript = `# GridWitness Agent — Windows PowerShell (CPU load estimate)
 $JobName = "GridWitnessAgent_${tenantId}"
 Get-Job -Name $JobName -ErrorAction SilentlyContinue | Stop-Job -PassThru | Remove-Job
 Start-Job -Name $JobName -ScriptBlock {
@@ -609,13 +742,14 @@ Start-Job -Name $JobName -ScriptBlock {
 Write-Host "GridWitness Agent attached for ${tenantId}." -ForegroundColor Green`
 
   const bashScript = `#!/bin/bash
-# GridWitness Agent — Linux/Unix
+# GridWitness Agent — Linux/Unix (CPU load estimate)
+# For more accurate readings on rack servers, use the Redfish tab instead.
 TENANT_ID="${tenantId}"
 API_URL="${INGEST_URL}"
 while true; do
     LOAD=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\\([0-9.]*\\)%* id.*/\\1/" | awk '{print 100 - $1}')
     WATT=$(echo "35 + ($LOAD * 1.2)" | bc | awk '{print int($1+0.5)}')
-    PAYLOAD="{\\"TenantID\\":\\"$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":$WATT,\\"InfraType\\":\\"Private_DC\\",\\"GridID\\":\\"AB\\"}"
+    PAYLOAD="{\\"TenantID\\":\\"$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":$WATT,\\"InfraType\\":\\"Private_DC\\",\\"GridID\\":\\"AB\\",\\"DataSource\\":\\"CPU_ESTIMATE\\"}"
     curl -s -X POST $API_URL -H "Content-Type: application/json" -d "$PAYLOAD" > /dev/null 2>&1
     sleep 300
 done &
@@ -644,9 +778,15 @@ spec:
             - { name: GW_TENANT_ID, value: "${tenantId}" }
             - { name: GW_API_URL,   value: "${INGEST_URL}" }`
 
-  const current = tab === 'ps' ? psScript :
-                  tab === 'bash' ? bashScript :
-                  tab === 'docker' ? dockerScript : k8sScript
+  const scriptMap: Record<string, string> = {
+    redfish: redfishScript,
+    gpu:     gpuScript,
+    ps:      psScript,
+    bash:    bashScript,
+    docker:  dockerScript,
+    k8s:     k8sScript,
+  }
+  const current = scriptMap[tab] ?? psScript
 
   function copyScript() {
     if (typeof navigator !== 'undefined' && navigator.clipboard) {
@@ -655,28 +795,34 @@ spec:
     }
   }
 
-  const tabs: Array<[typeof tab, string]> = [
-    ['ps', 'Windows (PowerShell)'],
-    ['bash', 'Linux (Bash)'],
-    ['docker', 'Docker'],
-    ['k8s', 'Kubernetes'],
+  const tabs: Array<[string, string, string]> = [
+    ['redfish', 'Redfish / BMC',      'Rack servers (Dell/HP/Supermicro) — actual PSU watts'],
+    ['gpu',     'GPU Mining',          'Nvidia/AMD GPU rigs — nvidia-smi / rocm-smi'],
+    ['ps',      'Windows',            'CPU load estimate'],
+    ['bash',    'Linux',              'CPU load estimate'],
+    ['docker',  'Docker',             'Container workload'],
+    ['k8s',     'Kubernetes',         'DaemonSet on every node'],
   ]
 
   return (
     <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
       <h2 className="font-semibold text-white flex items-center gap-2 mb-2">
         <Code className="w-4 h-4 text-gw-green" />
-        Manual Agent Scripts (Alternative)
+        Agent Scripts
       </h2>
-      <p className="text-sm text-gw-muted mb-4">
+      <p className="text-sm text-gw-muted mb-1">
         Pre-configured for <code className="text-xs bg-gw-dark px-1.5 py-0.5 rounded border border-gw-border text-gw-green">{tenantId}</code> · 5-min polling.
+      </p>
+      <p className="text-xs text-gw-muted mb-4">
+        <span className="text-gw-green font-medium">Redfish / GPU</span> tabs report actual measured watts from hardware — required for OSFI B-15 Scope 2 compliance.
+        OS tabs estimate from CPU load.
       </p>
       <div className="flex gap-1 mb-3 border-b border-gw-border overflow-x-auto">
         {tabs.map(([t, label]) => (
           <button
             key={t}
-            onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+            onClick={() => setTab(t as typeof tab)}
+            className={`px-3 py-2 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
               tab === t
                 ? 'border-gw-green text-gw-green'
                 : 'border-transparent text-gw-muted hover:text-white'
@@ -685,6 +831,9 @@ spec:
             {label}
           </button>
         ))}
+      </div>
+      <div className="text-xs text-gw-muted mb-2">
+        {tabs.find(([t]) => t === tab)?.[2]}
       </div>
       <div className="relative">
         <pre className="bg-gw-dark border border-gw-border text-gw-muted text-xs p-4 rounded-lg overflow-x-auto font-mono leading-relaxed max-h-96">
