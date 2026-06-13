@@ -13,6 +13,8 @@ import {
   Flame, Plus, Target, TrendingUp, AlertTriangle,
 } from 'lucide-react'
 
+// Cloud is used in SETTINGS_TABS (Integrations tab icon)
+
 const API_BASE   = process.env.NEXT_PUBLIC_API_URL ||
                    'https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com'
 const INGEST_URL = 'https://cxdp3mup50.execute-api.ca-central-1.amazonaws.com/live/telemetry'
@@ -21,8 +23,19 @@ type Toast = { type: 'success' | 'error' | 'info'; text: string } | null
 type ThresholdSet = { carbon: number; load: number; price: number }
 type Thresholds   = Record<string, ThresholdSet>
 
+const SETTINGS_TABS = [
+  { id: 'overview',  label: 'Overview',        icon: SettingsIcon },
+  { id: 'agent',     label: 'Agent & Scope 1', icon: Zap          },
+  { id: 'integrations', label: 'Integrations', icon: Cloud        },
+  { id: 'apikeys',   label: 'API Keys',        icon: Shield       },
+  { id: 'budget',    label: 'Carbon Budget',   icon: Target       },
+  { id: 'team',      label: 'Team',            icon: Bell         },
+] as const
+type SettingsTab = typeof SETTINGS_TABS[number]['id']
+
 export default function SettingsPage() {
   const [tenantId, setTenantId] = useState('GW-NIMBL-AEB47A92')
+  const [activeTab, setActiveTab] = useState<SettingsTab>('overview')
   const [toast, setToast]       = useState<Toast>(null)
   const [saving, setSaving]     = useState(false)
   const thresholdSaveRef = useRef<(() => Promise<{ ok: boolean; msg: string }>) | null>(null)
@@ -43,11 +56,9 @@ export default function SettingsPage() {
       results.push({ section: 'Thresholds', ...r })
     }
     const failed = results.filter(r => !r.ok)
-    if (failed.length === 0) {
-      setToast({ type: 'success', text: '✓ All settings saved.' })
-    } else {
-      setToast({ type: 'error', text: `Save failed: ${failed.map(f => `${f.section} (${f.msg})`).join('; ')}` })
-    }
+    setToast(failed.length === 0
+      ? { type: 'success', text: '✓ Settings saved.' }
+      : { type: 'error', text: `Save failed: ${failed.map(f => `${f.section} (${f.msg})`).join('; ')}` })
     setSaving(false)
   }
 
@@ -55,59 +66,90 @@ export default function SettingsPage() {
     <div className="min-h-screen bg-gw-dark">
       <Nav tenantId={tenantId} />
 
-      <div className="max-w-5xl mx-auto px-4 py-8 space-y-6">
+      <div className="max-w-5xl mx-auto px-4 pt-6 pb-12">
 
-        <div className="flex items-start justify-between">
+        {/* Page header */}
+        <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-xl font-bold text-white flex items-center gap-2">
               <SettingsIcon className="w-5 h-5 text-gw-green" />
               Settings
             </h1>
-            <p className="text-sm text-gw-muted mt-1">
-              Tenant: <code className="text-xs bg-gw-dark px-2 py-0.5 rounded border border-gw-border text-gw-muted">{tenantId}</code>
+            <p className="text-xs text-gw-muted mt-1">
+              Tenant&nbsp;
+              <code className="font-mono bg-gw-panel border border-gw-border px-2 py-0.5 rounded text-gw-muted">{tenantId}</code>
             </p>
           </div>
-          <button
-            onClick={handleSaveAll}
-            disabled={saving}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
-              saving
-                ? 'bg-gw-border text-gw-muted cursor-not-allowed'
-                : 'bg-gw-green text-gw-dark hover:bg-gw-green/90'
-            }`}
-          >
-            {saving ? <Loader className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-            {saving ? 'Saving…' : 'Save All Settings'}
-          </button>
+          {activeTab === 'overview' && (
+            <button onClick={handleSaveAll} disabled={saving}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors text-sm ${
+                saving ? 'bg-gw-border text-gw-muted cursor-not-allowed' : 'bg-gw-green text-gw-dark hover:bg-gw-green/90'
+              }`}>
+              {saving ? <Loader className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              {saving ? 'Saving…' : 'Save'}
+            </button>
+          )}
         </div>
 
         {toast && (
-          <div className={`rounded-xl p-3 text-sm border ${
+          <div className={`mb-4 rounded-xl p-3 text-sm border ${
             toast.type === 'success' ? 'bg-gw-green/10 border-gw-green/30 text-gw-green' :
             toast.type === 'error'   ? 'bg-red-500/10 border-red-500/30 text-red-400' :
                                        'bg-blue-500/10 border-blue-500/30 text-blue-400'
-          }`}>
-            {toast.text}
-          </div>
+          }`}>{toast.text}</div>
         )}
 
-        <TenantInfoSection tenantId={tenantId} />
-        <AesoApiSection />
-        <ThresholdSection
-          tenantId={tenantId}
-          registerSave={fn => { thresholdSaveRef.current = fn }}
-        />
-        <AwsAutoDiscoverySection tenantId={tenantId} setToast={setToast} />
-        <AgentScriptsSection tenantId={tenantId} />
-        <Scope1Section   tenantId={tenantId} />
-        <WebhookSection  tenantId={tenantId} />
-        <ApiKeysSection  tenantId={tenantId} />
-        <TeamSection     tenantId={tenantId} />
-        <BrandingSection tenantId={tenantId} />
-        <CarbonBudgetSection tenantId={tenantId} />
-        <NotificationsSection />
-        <ApiReferenceSection tenantId={tenantId} />
+        {/* Tab bar */}
+        <div className="flex gap-1 border-b border-gw-border mb-8 overflow-x-auto">
+          {SETTINGS_TABS.map(tab => {
+            const Icon = tab.icon
+            const active = activeTab === tab.id
+            return (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id as SettingsTab)}
+                className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium whitespace-nowrap border-b-2 transition-colors -mb-px ${
+                  active
+                    ? 'border-gw-green text-gw-green'
+                    : 'border-transparent text-gw-muted hover:text-white hover:border-gw-border'
+                }`}>
+                <Icon className="w-3.5 h-3.5" />{tab.label}
+              </button>
+            )
+          })}
+        </div>
 
+        {/* Tab content */}
+        <div className="space-y-6">
+          {activeTab === 'overview' && <>
+            <TenantInfoSection tenantId={tenantId} />
+            <AesoApiSection />
+            <ThresholdSection tenantId={tenantId} registerSave={fn => { thresholdSaveRef.current = fn }} />
+            <BrandingSection tenantId={tenantId} />
+          </>}
+
+          {activeTab === 'agent' && <>
+            <AwsAutoDiscoverySection tenantId={tenantId} setToast={setToast} />
+            <AgentScriptsSection tenantId={tenantId} />
+            <Scope1Section tenantId={tenantId} />
+          </>}
+
+          {activeTab === 'integrations' && <>
+            <WebhookSection tenantId={tenantId} />
+          </>}
+
+          {activeTab === 'apikeys' && <>
+            <ApiKeysSection tenantId={tenantId} />
+            <ApiReferenceSection tenantId={tenantId} />
+          </>}
+
+          {activeTab === 'budget' && <>
+            <CarbonBudgetSection tenantId={tenantId} />
+          </>}
+
+          {activeTab === 'team' && <>
+            <TeamSection tenantId={tenantId} />
+            <NotificationsSection />
+          </>}
+        </div>
       </div>
     </div>
   )
