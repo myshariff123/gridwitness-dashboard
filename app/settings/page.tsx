@@ -10,7 +10,7 @@ import Nav from '@/components/Nav'
 import {
   Settings as SettingsIcon, Save, Cloud, Bell, Code,
   AlertCircle, ExternalLink, Copy, Loader, Shield, Zap, CheckCircle,
-  Flame, Plus,
+  Flame, Plus, Target, TrendingUp, AlertTriangle,
 } from 'lucide-react'
 
 const API_BASE   = process.env.NEXT_PUBLIC_API_URL ||
@@ -104,6 +104,7 @@ export default function SettingsPage() {
         <ApiKeysSection  tenantId={tenantId} />
         <TeamSection     tenantId={tenantId} />
         <BrandingSection tenantId={tenantId} />
+        <CarbonBudgetSection tenantId={tenantId} />
         <NotificationsSection />
         <ApiReferenceSection tenantId={tenantId} />
 
@@ -1549,6 +1550,208 @@ Content-Type: application/json
       <p className="mt-4 text-xs text-gw-muted">
         Factors (kgCO2e/unit): diesel 2.68 · natural gas 1.96 · propane 1.51 · HFO 3.18 · gasoline 2.31 · coal 2.50 — ECCC NRI 2024.
       </p>
+    </section>
+  )
+}
+
+function CarbonBudgetSection({ tenantId }: { tenantId: string }) {
+  const [status, setStatus]             = useState<Record<string, unknown> | null>(null)
+  const [loading, setLoading]           = useState(true)
+  const [saving, setSaving]             = useState(false)
+  const [budgetT, setBudgetT]           = useState('')
+  const [periodType, setPeriodType]     = useState<'monthly' | 'quarterly'>('monthly')
+  const [notifEmail, setNotifEmail]     = useState('')
+  const [thresholds, setThresholds]     = useState([80, 95, 100])
+  const [saveMsg, setSaveMsg]           = useState('')
+  const [saveErr, setSaveErr]           = useState('')
+  const [deleting, setDeleting]         = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/budget`)
+      if (r.status === 404) { setStatus(null); setLoading(false); return }
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const d = await r.json()
+      setStatus(d)
+      setBudgetT(String(d.budget_t_co2e ?? ''))
+      setPeriodType(d.period_type ?? 'monthly')
+      setNotifEmail(d.notification_email ?? '')
+      setThresholds(d.thresholds ?? [80, 95, 100])
+    } catch { setStatus(null) }
+    finally { setLoading(false) }
+  }, [tenantId])
+
+  useEffect(() => { load() }, [load])
+
+  async function save() {
+    if (!budgetT || parseFloat(budgetT) <= 0) { setSaveErr('Budget must be > 0'); return }
+    setSaving(true); setSaveMsg(''); setSaveErr('')
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/budget`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ budget_t_co2e: parseFloat(budgetT), period_type: periodType,
+          notification_email: notifEmail, thresholds }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
+      setStatus(d); setSaveMsg('Budget saved')
+    } catch (e: unknown) { setSaveErr(e instanceof Error ? e.message : 'Save failed') }
+    finally { setSaving(false) }
+  }
+
+  async function remove() {
+    if (!confirm('Remove carbon budget for this tenant?')) return
+    setDeleting(true)
+    await fetch(`${API_BASE}/api/tenants/${tenantId}/budget`, { method: 'DELETE' })
+    setStatus(null); setBudgetT(''); setDeleting(false)
+  }
+
+  const pct     = typeof status?.pct_used === 'number' ? status.pct_used as number : 0
+  const barColor = pct >= 100 ? 'bg-red-500' : pct >= 95 ? 'bg-orange-500' : pct >= 80 ? 'bg-amber-400' : 'bg-gw-green'
+  const textColor = pct >= 100 ? 'text-red-400' : pct >= 95 ? 'text-orange-400' : pct >= 80 ? 'text-amber-400' : 'text-gw-green'
+
+  return (
+    <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
+      <div className="flex items-center gap-2 mb-1">
+        <Target className="w-4 h-4 text-purple-400" />
+        <h2 className="font-semibold text-white">Carbon Budget</h2>
+      </div>
+      <p className="text-sm text-gw-muted mb-5">
+        Set a Scope 1+2 tCO2e ceiling per period. Alerts fire at each threshold and create incidents automatically.
+      </p>
+
+      {/* Live status — only shown when a budget is configured */}
+      {!loading && status && (
+        <div className="mb-5 bg-gw-dark border border-gw-border rounded-lg p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs text-gw-muted">
+              {String(status.period_key)} · {String(status.period_type)}
+            </span>
+            <span className={`text-xs font-bold ${textColor}`}>{pct.toFixed(1)}% used</span>
+          </div>
+
+          {/* Progress bar */}
+          <div className="w-full h-3 bg-gw-panel rounded-full overflow-hidden mb-3">
+            <div className={`h-full rounded-full transition-all ${barColor}`}
+              style={{ width: `${Math.min(pct, 100)}%` }} />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            {[
+              ['Consumed', `${Number(status.consumed_t_co2e).toFixed(4)} tCO2e`],
+              ['Budget',   `${Number(status.budget_t_co2e).toFixed(2)} tCO2e`],
+              ['Remaining',`${Number(status.remaining_t_co2e).toFixed(4)} tCO2e`],
+              ['Days left', `${status.days_remaining} of ${status.days_total}`],
+            ].map(([label, val]) => (
+              <div key={label} className="bg-gw-panel border border-gw-border/50 rounded p-2">
+                <div className="text-xs text-gw-muted">{label}</div>
+                <div className="text-sm font-mono text-white mt-0.5">{val}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex flex-wrap gap-3 text-xs text-gw-muted">
+            <span>Scope 1: <span className="text-white font-mono">{Number(status.scope1_t_co2e).toFixed(4)} t</span></span>
+            <span>Scope 2: <span className="text-white font-mono">{Number(status.scope2_t_co2e).toFixed(4)} t</span></span>
+            <span>Burn rate: <span className="text-white font-mono">{Number(status.burn_rate_t_co2e_per_day).toFixed(5)} t/day</span></span>
+            {status.will_breach && (
+              <span className="flex items-center gap-1 text-red-400 font-medium">
+                <AlertTriangle className="w-3 h-3" />
+                On track to breach {status.projected_breach_date ? `on ${status.projected_breach_date}` : 'this period'}
+              </span>
+            )}
+            {!status.will_breach && pct > 0 && (
+              <span className="flex items-center gap-1 text-gw-green">
+                <TrendingUp className="w-3 h-3" />
+                On track to finish at {Number(status.projected_total_t_co2e).toFixed(4)} t
+              </span>
+            )}
+          </div>
+
+          {/* Threshold badges */}
+          {status.thresholds && (
+            <div className="flex gap-2 mt-3 flex-wrap">
+              {(status.thresholds as number[]).map(t => {
+                const fired = (status.alerts_fired as Record<string, number | null>)?.[String(t)]
+                return (
+                  <span key={t} className={`text-xs px-2 py-0.5 rounded border font-mono ${
+                    fired ? 'bg-red-500/10 border-red-500/30 text-red-400'
+                          : 'bg-gw-dark border-gw-border text-gw-muted'
+                  }`}>
+                    {t}% {fired ? '⚠ fired' : '· pending'}
+                  </span>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {loading && <div className="text-sm text-gw-muted mb-4">Loading budget…</div>}
+
+      {/* Config form */}
+      <div className="bg-gw-dark border border-gw-border rounded-lg p-4 space-y-3">
+        <div className="text-sm font-medium text-white mb-1">
+          {status ? 'Update Budget' : 'Configure Budget'}
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="text-xs text-gw-muted block mb-1">Budget (tCO2e)</label>
+            <input type="number" min="0" step="0.01" value={budgetT}
+              onChange={e => setBudgetT(e.target.value)} placeholder="e.g. 10.0"
+              className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-purple-400 focus:outline-none" />
+          </div>
+          <div>
+            <label className="text-xs text-gw-muted block mb-1">Period</label>
+            <select value={periodType} onChange={e => setPeriodType(e.target.value as 'monthly' | 'quarterly')}
+              className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-purple-400 focus:outline-none">
+              <option value="monthly">Monthly</option>
+              <option value="quarterly">Quarterly</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label className="text-xs text-gw-muted block mb-1">Alert thresholds (%)</label>
+          <div className="flex gap-2">
+            {[80, 95, 100].map(t => (
+              <button key={t} type="button"
+                onClick={() => setThresholds(prev =>
+                  prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t].sort((a,b) => a-b)
+                )}
+                className={`px-3 py-1 rounded text-xs font-mono border transition-colors ${
+                  thresholds.includes(t)
+                    ? 'bg-purple-500/20 border-purple-500/50 text-purple-300'
+                    : 'bg-gw-panel border-gw-border text-gw-muted'
+                }`}>
+                {t}%
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <label className="text-xs text-gw-muted block mb-1">Notification email (optional)</label>
+          <input type="email" value={notifEmail} onChange={e => setNotifEmail(e.target.value)}
+            placeholder="esg@yourcompany.com"
+            className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-purple-400 focus:outline-none" />
+        </div>
+        {saveErr && <p className="text-xs text-red-400">{saveErr}</p>}
+        {saveMsg && <p className="text-xs text-gw-green">{saveMsg}</p>}
+        <div className="flex gap-2 pt-1">
+          <button onClick={save} disabled={saving}
+            className="flex items-center gap-1.5 px-4 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded text-sm font-medium">
+            {saving ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+            {saving ? 'Saving…' : 'Save Budget'}
+          </button>
+          {status && (
+            <button onClick={remove} disabled={deleting}
+              className="px-4 py-1.5 border border-red-500/30 text-red-400 hover:bg-red-500/10 rounded text-sm">
+              {deleting ? 'Removing…' : 'Remove'}
+            </button>
+          )}
+        </div>
+      </div>
     </section>
   )
 }

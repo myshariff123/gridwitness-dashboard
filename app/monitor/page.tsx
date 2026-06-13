@@ -12,7 +12,7 @@ import {
   getLiveTelemetry, getLiveGridData,
   type TelemetryRecord, type GridSnapshot,
 } from '@/lib/api'
-import { Activity, Zap, Server, RefreshCw } from 'lucide-react'
+import { Activity, Zap, Server, RefreshCw, Target, TrendingUp, AlertTriangle } from 'lucide-react'
 
 interface DeviceRow {
   source:   string
@@ -53,6 +53,24 @@ function inferType(infraType: string | undefined, source: string): string {
   return infraType
 }
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ||
+                 'https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com'
+
+interface BudgetStatus {
+  period_key:             string
+  period_type:            string
+  budget_t_co2e:          number
+  consumed_t_co2e:        number
+  remaining_t_co2e:       number
+  pct_used:               number
+  burn_rate_t_co2e_per_day: number
+  days_remaining:         number
+  will_breach:            boolean
+  projected_breach_date:  string | null
+  thresholds:             number[]
+  alerts_fired:           Record<string, number | null>
+}
+
 export default function MonitorPage() {
   const [tenantId, setTenantId]     = useState('GW-NIMBL-AEB47A92')
   const [devices, setDevices]       = useState<DeviceRow[]>([])
@@ -64,6 +82,7 @@ export default function MonitorPage() {
   const [err, setErr]               = useState<string | null>(null)
   const [rawRecords, setRawRecords] = useState<TelemetryRecord[]>([])
   const [totalInLedger, setTotalInLedger] = useState<number | null>(null)
+  const [budget, setBudget]         = useState<BudgetStatus | null>(null)
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -120,6 +139,13 @@ export default function MonitorPage() {
         gridData.find(d => d.GridID === g) || { GridID: g } as GridSnapshot)
       setGrids(ordered)
       if (gridData.length === 0) anyError = true
+
+      // Budget status — silent if not configured (404 is fine)
+      try {
+        const br = await fetch(`${API_BASE}/api/tenants/${tenantId}/budget`)
+        if (br.ok) setBudget(await br.json())
+        else setBudget(null)
+      } catch { setBudget(null) }
 
       setLastUpdate(new Date())
       setErr(anyError ? 'One or more endpoints returned no data — check API and network' : null)
@@ -212,6 +238,79 @@ export default function MonitorPage() {
             </div>
           </div>
         </div>
+
+        {/* Carbon Budget widget — only when configured */}
+        {budget && (() => {
+          const pct       = budget.pct_used
+          const barColor  = pct >= 100 ? 'bg-red-500' : pct >= 95 ? 'bg-orange-500' : pct >= 80 ? 'bg-amber-400' : 'bg-gw-green'
+          const textColor = pct >= 100 ? 'text-red-400' : pct >= 95 ? 'text-orange-400' : pct >= 80 ? 'text-amber-400' : 'text-gw-green'
+          const firedKeys = Object.entries(budget.alerts_fired).filter(([,v]) => v !== null).map(([k]) => k)
+          return (
+            <div className="bg-gw-panel border border-gw-border rounded-xl p-5">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="font-semibold text-white flex items-center gap-2">
+                  <Target className="w-4 h-4 text-purple-400" />
+                  Carbon Budget
+                  <span className="text-xs text-gw-muted font-normal">· {budget.period_key} · {budget.period_type}</span>
+                </h2>
+                <div className="flex items-center gap-2">
+                  {budget.will_breach && (
+                    <span className="flex items-center gap-1 text-xs text-red-400 border border-red-400/30 px-2 py-0.5 rounded">
+                      <AlertTriangle className="w-3 h-3" />
+                      Breach projected {budget.projected_breach_date || 'this period'}
+                    </span>
+                  )}
+                  <a href={`/settings?tenant_id=${tenantId}`}
+                    className="text-xs text-gw-muted hover:text-purple-400 border border-gw-border px-2 py-0.5 rounded transition-colors">
+                    Configure
+                  </a>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-6">
+                {/* Progress bar column */}
+                <div className="flex-1">
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-gw-muted">
+                      {budget.consumed_t_co2e.toFixed(4)} tCO2e consumed
+                    </span>
+                    <span className={`font-bold ${textColor}`}>{pct.toFixed(1)}%</span>
+                  </div>
+                  <div className="w-full h-3 bg-gw-dark rounded-full overflow-hidden mb-1">
+                    <div className={`h-full rounded-full transition-all ${barColor}`}
+                      style={{ width: `${Math.min(pct, 100)}%` }} />
+                  </div>
+                  <div className="text-xs text-gw-muted">
+                    of {budget.budget_t_co2e.toFixed(2)} tCO2e · {budget.days_remaining} days remaining
+                  </div>
+                </div>
+
+                {/* Burn rate */}
+                <div className="text-right shrink-0">
+                  <div className="flex items-center gap-1 justify-end text-xs text-gw-muted">
+                    <TrendingUp className="w-3 h-3" />
+                    Burn rate
+                  </div>
+                  <div className="font-mono text-white text-sm">
+                    {budget.burn_rate_t_co2e_per_day.toFixed(5)}
+                  </div>
+                  <div className="text-xs text-gw-muted">tCO2e/day</div>
+                </div>
+
+                {/* Threshold badges */}
+                {firedKeys.length > 0 && (
+                  <div className="shrink-0 flex flex-col gap-1">
+                    {firedKeys.map(k => (
+                      <span key={k} className="text-xs px-2 py-0.5 rounded bg-red-500/10 border border-red-500/30 text-red-400 font-mono">
+                        {k}% fired
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )
+        })()}
 
         {/* Carbon Trend Sparkline — its OWN panel (was nested in h2; now fixed) */}
         <CarbonTrendSparkline records={rawRecords} bucketMinutes={60} buckets={24} />
