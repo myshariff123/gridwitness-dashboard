@@ -82,9 +82,9 @@ export default function Nav({ tenantId: propTenantId }: NavProps = {}) {
           >
             + New Tenant
           </Link>
-          <Link href="/auth" className="text-sm text-gw-green hover:underline">
+          <a href="/auth/logout" className="text-sm text-gw-green hover:underline">
             Sign out
-          </Link>
+          </a>
         </div>
       </div>
     </header>
