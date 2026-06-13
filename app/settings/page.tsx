@@ -603,6 +603,7 @@ BMC_HOST="192.168.1.100"   # <-- replace with your BMC/iDRAC/iLO IP
 BMC_USER="root"             # Dell default: root / HP default: Administrator
 BMC_PASS="calvin"           # <-- replace with your BMC password
 TENANT_ID="${tenantId}"
+GW_API_KEY="gwk-YOUR_API_KEY_HERE"   # Settings → API Keys → create key
 API_URL="${INGEST_URL}"
 GRID_ID="AB"
 INTERVAL=300  # seconds between readings (5 min)
@@ -660,6 +661,7 @@ while true; do
 
   curl -s -X POST "\$API_URL" \\
     -H "Content-Type: application/json" \\
+    -H "X-GW-API-Key: \${GW_API_KEY}" \\
     -d "{\\"TenantID\\":\\"\$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":\$WATTS,\\"InfraType\\":\\"Physical_BMC\\",\\"GridID\\":\\"\$GRID_ID\\",\\"DataSource\\":\\"\$DATA_SOURCE\\"}" \\
     > /dev/null 2>&1
 
@@ -674,6 +676,7 @@ done`
 # Reports ACTUAL measured wattage (not estimates) — suitable for OSFI B-15 Scope 2 reporting.
 
 TENANT_ID="${tenantId}"
+GW_API_KEY="gwk-YOUR_API_KEY_HERE"   # Settings → API Keys → create key
 API_URL="${INGEST_URL}"
 GRID_ID="AB"
 # Overhead for PSU losses + CPU + memory + fans (typical mining rig: 80-120W)
@@ -714,6 +717,7 @@ while true; do
 
   curl -s -X POST "\$API_URL" \\
     -H "Content-Type: application/json" \\
+    -H "X-GW-API-Key: \${GW_API_KEY}" \\
     -d "{\\"TenantID\\":\\"\$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":\$TOTAL_WATTS,\\"InfraType\\":\\"GPU_Mining_Rig\\",\\"GridID\\":\\"\$GRID_ID\\",\\"DataSource\\":\\"\$DATA_SOURCE\\"}" \\
     > /dev/null 2>&1
 
@@ -741,6 +745,7 @@ MINER_TYPE  = "antminer"       # "antminer" or "whatsminer"
 WM_PASSWORD = "admin"          # Whatsminer HTTP API password (default: admin)
 
 TENANT_ID   = "${tenantId}"
+GW_API_KEY  = "gwk-YOUR_API_KEY_HERE"   # Settings → API Keys → create key
 API_URL     = "${INGEST_URL}"
 GRID_ID     = "AB"
 INTERVAL    = 300              # seconds between readings (5 min)
@@ -830,7 +835,9 @@ def report(watts, src):
     }).encode()
     try:
         urllib.request.urlopen(urllib.request.Request(
-            API_URL, data=payload, headers={"Content-Type":"application/json"}, method="POST"
+            API_URL, data=payload,
+            headers={"Content-Type": "application/json", "X-GW-API-Key": GW_API_KEY},
+            method="POST"
         ), timeout=10)
     except Exception as e:
         print(f"  Report error: {e}")
@@ -852,7 +859,8 @@ Get-Job -Name $JobName -ErrorAction SilentlyContinue | Stop-Job -PassThru | Remo
 Start-Job -Name $JobName -ScriptBlock {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $TenantID = "${tenantId}"
-    $ApiUrl = "${INGEST_URL}"
+    $ApiKey   = "gwk-YOUR_API_KEY_HERE"   # Settings → API Keys → create key
+    $ApiUrl   = "${INGEST_URL}"
     while ($true) {
         try {
             $Cpu = Get-CimInstance Win32_Processor
@@ -862,7 +870,9 @@ Start-Job -Name $JobName -ScriptBlock {
                 TenantID = $TenantID; Source = $env:COMPUTERNAME
                 Actual_Wattage = $RealWattage; InfraType = "Private_DC"; GridID = "AB"
             } | ConvertTo-Json -Compress
-            Invoke-RestMethod -Uri $ApiUrl -Method Post -Body $Payload -ContentType "application/json"
+            Invoke-RestMethod -Uri $ApiUrl -Method Post -Body $Payload \`
+                -ContentType "application/json" \`
+                -Headers @{ "X-GW-API-Key" = $ApiKey }
         } catch {}
         Start-Sleep -Seconds 300
     }
@@ -873,20 +883,30 @@ Write-Host "GridWitness Agent attached for ${tenantId}." -ForegroundColor Green`
 # GridWitness Agent — Linux/Unix (CPU load estimate)
 # For more accurate readings on rack servers, use the Redfish tab instead.
 TENANT_ID="${tenantId}"
+GW_API_KEY="gwk-YOUR_API_KEY_HERE"   # Settings → API Keys → create key
 API_URL="${INGEST_URL}"
 while true; do
     LOAD=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\\([0-9.]*\\)%* id.*/\\1/" | awk '{print 100 - $1}')
     WATT=$(echo "35 + ($LOAD * 1.2)" | bc | awk '{print int($1+0.5)}')
     PAYLOAD="{\\"TenantID\\":\\"$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":$WATT,\\"InfraType\\":\\"Private_DC\\",\\"GridID\\":\\"AB\\",\\"DataSource\\":\\"CPU_ESTIMATE\\"}"
-    curl -s -X POST $API_URL -H "Content-Type: application/json" -d "$PAYLOAD" > /dev/null 2>&1
+    curl -s -X POST $API_URL \\
+      -H "Content-Type: application/json" \\
+      -H "X-GW-API-Key: $GW_API_KEY" \\
+      -d "$PAYLOAD" > /dev/null 2>&1
     sleep 300
 done &
 echo "GridWitness Agent attached for ${tenantId}."`
 
   const dockerScript = `docker run -d --name gridwitness-agent --restart unless-stopped \\
   -e GW_TENANT_ID=${tenantId} \\
+  -e GW_API_KEY=gwk-YOUR_API_KEY_HERE \\
   -e GW_API_URL=${INGEST_URL} \\
-  alpine:3.19 sh -c 'apk add --no-cache curl bc; while true; do curl -s -X POST $GW_API_URL -H "Content-Type: application/json" -d "{\\"TenantID\\":\\"$GW_TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":50,\\"InfraType\\":\\"Container\\",\\"GridID\\":\\"AB\\"}"; sleep 300; done'`
+  alpine:3.19 sh -c 'apk add --no-cache curl bc; while true; do \\
+    curl -s -X POST $GW_API_URL \\
+      -H "Content-Type: application/json" \\
+      -H "X-GW-API-Key: $GW_API_KEY" \\
+      -d "{\\"TenantID\\":\\"$GW_TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":50,\\"InfraType\\":\\"Container\\",\\"GridID\\":\\"AB\\"}"; \\
+    sleep 300; done'`
 
   const k8sScript = `# Save as gridwitness-agent.yaml and apply with: kubectl apply -f gridwitness-agent.yaml
 apiVersion: apps/v1
@@ -904,6 +924,7 @@ spec:
           image: alpine:3.19
           env:
             - { name: GW_TENANT_ID, value: "${tenantId}" }
+            - { name: GW_API_KEY,   value: "gwk-YOUR_API_KEY_HERE" }
             - { name: GW_API_URL,   value: "${INGEST_URL}" }`
 
   const scriptMap: Record<string, string> = {
@@ -991,12 +1012,12 @@ const SCOPE1_FUELS: Record<string, { label: string; unit: string; factor: number
 }
 
 interface Scope1Entry {
-  entry_id:    string
-  fuel_type:   string
-  quantity:    number
-  unit:        string
-  kg_co2e:     number
-  source:      string
+  entry_id:     string
+  fuel_type:    string
+  quantity:     number
+  unit:         string
+  kg_co2e:      number
+  source:       string
   period_start?: string
   period_end?:   string
   recorded_at:   string
@@ -1004,6 +1025,8 @@ interface Scope1Entry {
 }
 
 function Scope1Section({ tenantId }: { tenantId: string }) {
+  const [mode, setMode]               = useState<'manual' | 'bms'>('manual')
+  const [bmsTab, setBmsTab]           = useState<'rest' | 'modbus' | 'mqtt'>('rest')
   const [entries, setEntries]         = useState<Scope1Entry[]>([])
   const [totalT, setTotalT]           = useState(0)
   const [loading, setLoading]         = useState(true)
@@ -1015,11 +1038,255 @@ function Scope1Section({ tenantId }: { tenantId: string }) {
   const [submitting, setSubmitting]   = useState(false)
   const [formError, setFormError]     = useState('')
   const [formSuccess, setFormSuccess] = useState('')
-  const [showForm, setShowForm]       = useState(false)
+  const [bmsCopied, setBmsCopied]     = useState(false)
 
-  const fuel = SCOPE1_FUELS[fuelType]
-  const qty  = parseFloat(quantity) || 0
+  const fuel    = SCOPE1_FUELS[fuelType]
+  const qty     = parseFloat(quantity) || 0
   const preview = qty > 0 ? (qty * fuel.factor).toFixed(1) : null
+
+  const ingestUrl = `${API_BASE}/api/scope1/ingest`
+
+  const restBmsScript = `#!/usr/bin/env python3
+# GridWitness BMS Connector — REST/JSON BMS Integration
+# Compatible: Siemens Desigo CC, Schneider EcoStruxure, Johnson Controls Metasys,
+#             Honeywell EBI, Tridium Niagara, and any BMS with a REST API.
+# Requires: Python 3.6+  (zero external dependencies — pure stdlib)
+#
+# SETUP:
+#   1. Set BMS_BASE_URL, credentials, and FUEL_POINTS below
+#   2. Run: python3 gw_bms_connector.py
+#      Background: nohup python3 gw_bms_connector.py &
+#
+# HOW TO FIND POINT PATHS:
+#   Siemens Desigo:   Management Station → Object Configurator → browse points
+#   Schneider:        EcoStruxure Building Expert → Points browser → filter "fuel"
+#   JCI Metasys:      Site Management Portal → tree view → copy object reference
+#   Niagara:          Workbench → nav tree → right-click point → copy ord
+
+import json, time, urllib.request, urllib.error
+from datetime import datetime, timedelta, timezone
+
+# ── CONFIGURE THESE ─────────────────────────────────────────
+BMS_BASE_URL = "https://bms.yourbuilding.com"    # BMS API host
+BMS_USERNAME = "api_reader"
+BMS_PASSWORD = "changeme"
+
+# Map each fuel point path (in your BMS) → GridWitness fuel type.
+# The value at each point must be the DAILY or PERIODIC consumption in the
+# units GridWitness expects (liters for diesel/propane/HFO, m³ for gas, kg for coal).
+FUEL_POINTS = {
+    "diesel":      "/api/v1/points/Generator.A.FuelConsumed_L",
+    # "natural_gas": "/api/v1/points/Gas.Meter1.DailyTotal_m3",
+}
+POLL_HOURS = 24   # report every N hours (24 = daily totals)
+
+TENANT_ID  = "${tenantId}"
+GW_API_KEY = "gwk-YOUR_API_KEY_HERE"   # Settings → API Keys
+GW_INGEST  = "${API_BASE}/api/scope1/ingest"
+# ─────────────────────────────────────────────────────────────
+
+_token = ""
+
+def bms_login():
+    global _token
+    req = urllib.request.Request(
+        f"{BMS_BASE_URL}/api/v1/authenticate",
+        data=json.dumps({"username": BMS_USERNAME, "password": BMS_PASSWORD}).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    r = json.loads(urllib.request.urlopen(req, timeout=15).read())
+    # Handles Desigo (Token), Metasys (accessToken), generic (token / access_token)
+    _token = r.get("Token") or r.get("accessToken") or r.get("token") or r.get("access_token", "")
+    print(f"BMS auth OK ({BMS_BASE_URL}), token …{_token[-6:]}")
+
+def bms_read(path):
+    req = urllib.request.Request(
+        f"{BMS_BASE_URL}{path}",
+        headers={"Authorization": f"Bearer {_token}", "Accept": "application/json"})
+    d = json.loads(urllib.request.urlopen(req, timeout=10).read())
+    # Try common field names across BMS vendors
+    for key in ("presentValue", "value", "Value", "numericValue", "result"):
+        if key in d: return float(d[key])
+    raise ValueError(f"Unrecognised response shape: {list(d.keys())}")
+
+def report(fuel_type, quantity):
+    today = datetime.now(timezone.utc).date()
+    payload = json.dumps({
+        "tenant_id":   TENANT_ID,
+        "fuel_type":   fuel_type,
+        "quantity":    round(quantity, 3),
+        "period_start": str(today - timedelta(days=1)),
+        "period_end":   str(today),
+        "source":      "bms_rest_api",
+        "notes":       f"Auto-read {BMS_BASE_URL}",
+    }).encode()
+    req = urllib.request.Request(GW_INGEST, data=payload, method="POST",
+        headers={"Content-Type": "application/json", "X-GW-API-Key": GW_API_KEY})
+    urllib.request.urlopen(req, timeout=10)
+    print(f"  Reported: {fuel_type} {quantity}")
+
+bms_login()
+print(f"GridWitness BMS Connector running — polling every {POLL_HOURS}h")
+while True:
+    for fuel, path in FUEL_POINTS.items():
+        try:
+            qty = bms_read(path)
+            if qty > 0:
+                report(fuel, qty)
+        except urllib.error.HTTPError as e:
+            if e.code == 401:
+                print("Token expired, re-authenticating…"); bms_login()
+            else:
+                print(f"BMS read error ({fuel}): {e}")
+        except Exception as e:
+            print(f"Error ({fuel}): {e}")
+    time.sleep(POLL_HOURS * 3600)`
+
+  const modbusBmsScript = `#!/usr/bin/env python3
+# GridWitness Modbus TCP Bridge — reads fuel meters via Modbus TCP
+# Compatible: Krohne, Endress+Hauser, Yokogawa, Siemens MAG flow meters,
+#             any Modbus TCP-enabled fuel flow meter or tank level sensor.
+# Requires: Python 3.6+  (zero external dependencies — uses stdlib socket + struct)
+#
+# SETUP:
+#   1. Get the Modbus register map from your meter's documentation
+#   2. Set MODBUS_HOST and REGISTERS below
+#   3. Run: python3 gw_modbus_bridge.py
+
+import struct, socket, json, time, urllib.request
+from datetime import datetime, timedelta, timezone
+
+# ── CONFIGURE THESE ─────────────────────────────────────────
+MODBUS_HOST = "192.168.1.200"   # Modbus device IP
+MODBUS_PORT = 502               # standard Modbus TCP port
+UNIT_ID     = 1                 # Modbus unit/slave ID (check device label)
+
+# Register map — from your device's Modbus map document.
+# type: "float32" (4 bytes, 2 registers) or "uint16" (2 bytes, 1 register)
+# scale: multiply raw value by this to get the unit GridWitness expects
+REGISTERS = [
+    # Example: holding reg 3000 holds diesel consumption as float32 in liters
+    {"fuel": "diesel",      "reg": 3000, "type": "float32", "scale": 1.0},
+    # {"fuel": "natural_gas", "reg": 3010, "type": "float32", "scale": 1.0},
+]
+POLL_HOURS = 24
+
+TENANT_ID  = "${tenantId}"
+GW_API_KEY = "gwk-YOUR_API_KEY_HERE"   # Settings → API Keys
+GW_INGEST  = "${API_BASE}/api/scope1/ingest"
+# ─────────────────────────────────────────────────────────────
+
+def modbus_read(host, port, unit_id, reg_addr, reg_type):
+    n_regs = 2 if reg_type == "float32" else 1
+    frame  = struct.pack(">HHHBBHH", 1, 0, 6, unit_id, 0x03, reg_addr, n_regs)
+    with socket.create_connection((host, port), timeout=10) as s:
+        s.sendall(frame)
+        resp = s.recv(256)
+    if len(resp) < 9 + n_regs * 2 or resp[7] != 0x03:
+        raise ValueError(f"Bad Modbus response: {resp.hex()}")
+    raw = resp[9:9 + n_regs * 2]
+    return struct.unpack(">f", raw)[0] if reg_type == "float32" else struct.unpack(">H", raw)[0]
+
+def report(fuel_type, quantity):
+    today = datetime.now(timezone.utc).date()
+    payload = json.dumps({
+        "tenant_id":   TENANT_ID, "fuel_type": fuel_type,
+        "quantity":    round(quantity, 3),
+        "period_start": str(today - timedelta(days=1)), "period_end": str(today),
+        "source":      "modbus_tcp",
+        "notes":       f"Modbus {MODBUS_HOST}:{MODBUS_PORT} reg {[r['reg'] for r in REGISTERS]}",
+    }).encode()
+    req = urllib.request.Request(GW_INGEST, data=payload, method="POST",
+        headers={"Content-Type": "application/json", "X-GW-API-Key": GW_API_KEY})
+    urllib.request.urlopen(req, timeout=10)
+
+print(f"GridWitness Modbus Bridge | {MODBUS_HOST}:{MODBUS_PORT} | tenant {TENANT_ID}")
+while True:
+    for r in REGISTERS:
+        try:
+            raw = modbus_read(MODBUS_HOST, MODBUS_PORT, UNIT_ID, r["reg"], r["type"])
+            qty = round(raw * r["scale"], 3)
+            print(f"OK {r['fuel']}: reg {r['reg']} = {raw:.3f} × {r['scale']} = {qty}")
+            if qty > 0: report(r["fuel"], qty)
+        except Exception as e:
+            print(f"Error {r['fuel']}: {e}")
+    time.sleep(POLL_HOURS * 3600)`
+
+  const mqttBmsScript = `#!/usr/bin/env python3
+# GridWitness MQTT Bridge — subscribes to BMS/IoT fuel consumption topics
+# Compatible: any MQTT-enabled BMS, IoT gateway, smart meter, or SCADA system.
+# Requires: Python 3.6+  |  pip3 install paho-mqtt
+#
+# SETUP:
+#   1. pip3 install paho-mqtt
+#   2. Set MQTT_BROKER, TOPIC_MAP below
+#   3. Run: python3 gw_mqtt_bridge.py
+
+import json, time, urllib.request
+from datetime import datetime, timezone
+
+try:
+    import paho.mqtt.client as mqtt
+except ImportError:
+    print("Install: pip3 install paho-mqtt"); raise
+
+# ── CONFIGURE THESE ─────────────────────────────────────────
+MQTT_BROKER = "mqtt.yourbuilding.com"
+MQTT_PORT   = 1883
+MQTT_USER   = ""        # leave empty if broker has no auth
+MQTT_PASS   = ""
+
+# Map MQTT topic → GridWitness fuel type.
+# The payload on each topic must be JSON with a "value" key (or plain number).
+# Quantity units must match GridWitness: liters for diesel/propane, m³ for gas.
+TOPIC_MAP = {
+    "building/generator/fuel_consumed_L": "diesel",
+    # "building/gas/daily_m3":           "natural_gas",
+}
+PAYLOAD_KEY = "value"   # JSON key holding the numeric quantity
+
+TENANT_ID  = "${tenantId}"
+GW_API_KEY = "gwk-YOUR_API_KEY_HERE"   # Settings → API Keys
+GW_INGEST  = "${API_BASE}/api/scope1/ingest"
+# ─────────────────────────────────────────────────────────────
+
+def report(fuel_type, quantity, topic):
+    today = str(datetime.now(timezone.utc).date())
+    payload = json.dumps({
+        "tenant_id": TENANT_ID, "fuel_type": fuel_type,
+        "quantity":  round(quantity, 3), "period_end": today,
+        "source":    "mqtt_bms", "notes": f"MQTT: {topic}",
+    }).encode()
+    req = urllib.request.Request(GW_INGEST, data=payload, method="POST",
+        headers={"Content-Type": "application/json", "X-GW-API-Key": GW_API_KEY})
+    urllib.request.urlopen(req, timeout=10)
+
+def on_message(client, userdata, msg):
+    fuel = TOPIC_MAP.get(msg.topic)
+    if not fuel: return
+    try:
+        raw  = json.loads(msg.payload)
+        qty  = float(raw[PAYLOAD_KEY]) if isinstance(raw, dict) else float(raw)
+        if qty > 0:
+            report(fuel, qty, msg.topic)
+            print(f"OK {fuel}: {qty} from {msg.topic}")
+    except Exception as e:
+        print(f"Parse error ({msg.topic}): {e}")
+
+client = mqtt.Client()
+if MQTT_USER: client.username_pw_set(MQTT_USER, MQTT_PASS)
+client.on_message = on_message
+client.connect(MQTT_BROKER, MQTT_PORT, 60)
+for topic in TOPIC_MAP:
+    client.subscribe(topic)
+    print(f"Subscribed: {topic}")
+print(f"GridWitness MQTT Bridge | {MQTT_BROKER} | tenant {TENANT_ID}")
+client.loop_forever()`
+
+  const bmsScripts: Record<string, string> = {
+    rest:   restBmsScript,
+    modbus: modbusBmsScript,
+    mqtt:   mqttBmsScript,
+  }
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -1064,26 +1331,15 @@ function Scope1Section({ tenantId }: { tenantId: string }) {
 
   return (
     <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
-      <div className="flex items-start justify-between mb-4">
-        <div>
-          <h2 className="font-semibold text-white flex items-center gap-2">
-            <Flame className="w-4 h-4 text-orange-400" />
-            Scope 1 Emissions
-          </h2>
-          <p className="text-sm text-gw-muted mt-1">
-            Direct combustion: diesel generators, natural gas, propane. Factors from ECCC NRI.
-          </p>
-        </div>
-        <button
-          onClick={() => setShowForm(s => !s)}
-          className="flex items-center gap-1.5 px-3 py-1.5 bg-orange-500/10 border border-orange-500/30 text-orange-400 hover:bg-orange-500/20 rounded-lg text-sm transition-colors"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          Log Entry
-        </button>
+      <div className="flex items-center gap-2 mb-1">
+        <Flame className="w-4 h-4 text-orange-400" />
+        <h2 className="font-semibold text-white">Scope 1 Emissions</h2>
       </div>
+      <p className="text-sm text-gw-muted mb-4">
+        Direct combustion: diesel generators, natural gas, propane. ECCC NRI emission factors.
+      </p>
 
-      {/* Summary */}
+      {/* Summary row */}
       <div className="grid grid-cols-3 gap-3 mb-5">
         <div className="bg-gw-dark border border-gw-border rounded-lg p-3 text-center">
           <div className="text-xs text-gw-muted mb-1">Total Scope 1</div>
@@ -1096,172 +1352,201 @@ function Scope1Section({ tenantId }: { tenantId: string }) {
           <div className="text-xs text-gw-muted">records</div>
         </div>
         <div className="bg-gw-dark border border-gw-border rounded-lg p-3 text-center">
-          <div className="text-xs text-gw-muted mb-1">Scope</div>
+          <div className="text-xs text-gw-muted mb-1">Protocol</div>
           <div className="text-sm font-bold text-white pt-1">GHG Protocol</div>
           <div className="text-xs text-gw-muted">Scope 1 direct</div>
         </div>
       </div>
 
-      {/* Entry form */}
-      {showForm && (
-        <form onSubmit={submit} className="bg-gw-dark border border-gw-border rounded-lg p-4 mb-4 space-y-3">
-          <div className="text-sm font-medium text-white mb-1">New Fuel Entry</div>
+      {/* Mode tabs */}
+      <div className="flex gap-1 border-b border-gw-border mb-5">
+        {([['manual', 'Manual Entry'], ['bms', 'BMS Integration']] as const).map(([m, label]) => (
+          <button key={m} onClick={() => setMode(m)}
+            className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
+              mode === m ? 'border-orange-400 text-orange-400' : 'border-transparent text-gw-muted hover:text-white'
+            }`}>
+            {label}
+          </button>
+        ))}
+      </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-gw-muted block mb-1">Fuel Type</label>
-              <select
-                value={fuelType}
-                onChange={e => setFuelType(e.target.value)}
-                className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none"
-              >
-                {Object.entries(SCOPE1_FUELS).map(([k, v]) => (
-                  <option key={k} value={k}>{v.label}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="text-xs text-gw-muted block mb-1">
-                Quantity ({fuel.unit})
-              </label>
-              <div className="relative">
-                <input
-                  type="number" min="0" step="any"
-                  value={quantity}
-                  onChange={e => setQuantity(e.target.value)}
-                  placeholder="0"
-                  className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none"
-                />
-                {preview && (
-                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-orange-400 font-mono">
-                    ≈{preview} kg
-                  </span>
-                )}
+      {mode === 'manual' ? (
+        <>
+          {/* Manual entry form */}
+          <form onSubmit={submit} className="bg-gw-dark border border-gw-border rounded-lg p-4 mb-4 space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-gw-muted block mb-1">Fuel Type</label>
+                <select value={fuelType} onChange={e => setFuelType(e.target.value)}
+                  className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none">
+                  {Object.entries(SCOPE1_FUELS).map(([k, v]) => (
+                    <option key={k} value={k}>{v.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-gw-muted block mb-1">Quantity ({fuel.unit})</label>
+                <div className="relative">
+                  <input type="number" min="0" step="any" value={quantity}
+                    onChange={e => setQuantity(e.target.value)} placeholder="0"
+                    className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none" />
+                  {preview && (
+                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-orange-400 font-mono">≈{preview} kg</span>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-xs text-gw-muted block mb-1">Period Start (optional)</label>
-              <input
-                type="date"
-                value={periodStart}
-                onChange={e => setPeriodStart(e.target.value)}
-                className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none"
-              />
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-gw-muted block mb-1">Period Start (optional)</label>
+                <input type="date" value={periodStart} onChange={e => setPeriodStart(e.target.value)}
+                  className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none" />
+              </div>
+              <div>
+                <label className="text-xs text-gw-muted block mb-1">Period End (optional)</label>
+                <input type="date" value={periodEnd} onChange={e => setPeriodEnd(e.target.value)}
+                  className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none" />
+              </div>
             </div>
             <div>
-              <label className="text-xs text-gw-muted block mb-1">Period End (optional)</label>
-              <input
-                type="date"
-                value={periodEnd}
-                onChange={e => setPeriodEnd(e.target.value)}
-                className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none"
-              />
+              <label className="text-xs text-gw-muted block mb-1">Notes (optional)</label>
+              <input type="text" value={notes} onChange={e => setNotes(e.target.value)}
+                placeholder="e.g. Generator test run — Building B"
+                className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none" />
             </div>
-          </div>
+            {preview && (
+              <div className="flex items-center gap-2 p-2.5 bg-orange-500/10 border border-orange-500/20 rounded text-xs">
+                <Flame className="w-3.5 h-3.5 text-orange-400 flex-shrink-0" />
+                <span className="text-orange-300">
+                  {qty} {fuel.unit} × {fuel.factor} kgCO2e/{fuel.unit} = <strong className="text-orange-400">{preview} kgCO2e</strong>
+                  <span className="text-gw-muted ml-1">(ECCC NRI)</span>
+                </span>
+              </div>
+            )}
+            {formError   && <p className="text-xs text-red-400">{formError}</p>}
+            {formSuccess && <p className="text-xs text-gw-green">{formSuccess}</p>}
+            <div className="flex gap-2 pt-1">
+              <button type="submit" disabled={submitting}
+                className="flex items-center gap-1.5 px-4 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white rounded text-sm font-medium">
+                {submitting ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                {submitting ? 'Recording…' : 'Record Entry'}
+              </button>
+            </div>
+          </form>
 
-          <div>
-            <label className="text-xs text-gw-muted block mb-1">Notes (optional)</label>
-            <input
-              type="text"
-              value={notes}
-              onChange={e => setNotes(e.target.value)}
-              placeholder="e.g. Generator test run — Building B"
-              className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none"
-            />
-          </div>
-
-          {preview && (
-            <div className="flex items-center gap-2 p-2.5 bg-orange-500/10 border border-orange-500/20 rounded text-xs">
-              <Flame className="w-3.5 h-3.5 text-orange-400 flex-shrink-0" />
-              <span className="text-orange-300">
-                {qty} {fuel.unit} of {fuel.label} × {fuel.factor} kgCO2e/{fuel.unit} =&nbsp;
-                <strong className="text-orange-400">{preview} kgCO2e</strong>
-                <span className="text-gw-muted ml-1">(ECCC NRI factor)</span>
-              </span>
+          {/* Entries table */}
+          {loading ? (
+            <div className="text-sm text-gw-muted py-3">Loading entries…</div>
+          ) : entries.length === 0 ? (
+            <div className="text-sm text-gw-muted py-4 text-center border border-dashed border-gw-border rounded-lg">
+              No Scope 1 entries yet. Use the form above or connect a BMS via the <strong className="text-white">BMS Integration</strong> tab.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="border-b border-gw-border">
+                  <tr className="text-gw-muted text-left">
+                    <th className="py-2 pr-3 font-medium">Fuel</th>
+                    <th className="py-2 pr-3 font-medium">Quantity</th>
+                    <th className="py-2 pr-3 font-medium">kgCO2e</th>
+                    <th className="py-2 pr-3 font-medium hidden md:table-cell">Period</th>
+                    <th className="py-2 pr-3 font-medium hidden md:table-cell">Source</th>
+                    <th className="py-2 font-medium">Date</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gw-border/40">
+                  {entries.map(e => (
+                    <tr key={e.entry_id} className="hover:bg-gw-dark/40">
+                      <td className="py-2 pr-3 text-white font-medium">{SCOPE1_FUELS[e.fuel_type]?.label ?? e.fuel_type}</td>
+                      <td className="py-2 pr-3 font-mono text-white">{e.quantity} {e.unit}</td>
+                      <td className="py-2 pr-3 font-mono text-orange-400 font-medium">{e.kg_co2e.toFixed(1)}</td>
+                      <td className="py-2 pr-3 text-gw-muted hidden md:table-cell">
+                        {e.period_start && e.period_end ? `${e.period_start} → ${e.period_end}` : e.period_start || '—'}
+                      </td>
+                      <td className="py-2 pr-3 text-gw-muted hidden md:table-cell">{e.source}</td>
+                      <td className="py-2 text-gw-muted">{new Date(parseInt(e.recorded_at) * 1000).toLocaleDateString('en-CA')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
-
-          {formError   && <p className="text-xs text-red-400">{formError}</p>}
-          {formSuccess && <p className="text-xs text-gw-green">{formSuccess}</p>}
-
-          <div className="flex gap-2 pt-1">
-            <button
-              type="submit"
-              disabled={submitting}
-              className="flex items-center gap-1.5 px-4 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white rounded text-sm font-medium"
-            >
-              {submitting ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-              {submitting ? 'Recording…' : 'Record Entry'}
-            </button>
-            <button
-              type="button"
-              onClick={() => { setShowForm(false); setFormError(''); setFormSuccess('') }}
-              className="px-4 py-1.5 border border-gw-border text-gw-muted hover:text-white rounded text-sm"
-            >
-              Cancel
-            </button>
-          </div>
-        </form>
-      )}
-
-      {/* Entries table */}
-      {loading ? (
-        <div className="text-sm text-gw-muted py-3">Loading entries…</div>
-      ) : entries.length === 0 ? (
-        <div className="text-sm text-gw-muted py-3 text-center border border-dashed border-gw-border rounded-lg">
-          No Scope 1 entries yet. Click <strong className="text-white">Log Entry</strong> to record fuel usage.
-        </div>
+        </>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead className="border-b border-gw-border">
-              <tr className="text-gw-muted text-left">
-                <th className="py-2 pr-3 font-medium">Fuel</th>
-                <th className="py-2 pr-3 font-medium">Quantity</th>
-                <th className="py-2 pr-3 font-medium">kgCO2e</th>
-                <th className="py-2 pr-3 font-medium hidden md:table-cell">Period</th>
-                <th className="py-2 pr-3 font-medium hidden lg:table-cell">Notes</th>
-                <th className="py-2 font-medium">Recorded</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gw-border/40">
-              {entries.map(e => (
-                <tr key={e.entry_id} className="hover:bg-gw-dark/50 transition-colors">
-                  <td className="py-2 pr-3">
-                    <span className="text-white font-medium">
-                      {SCOPE1_FUELS[e.fuel_type]?.label ?? e.fuel_type}
-                    </span>
-                  </td>
-                  <td className="py-2 pr-3 font-mono text-white">
-                    {e.quantity} {e.unit}
-                  </td>
-                  <td className="py-2 pr-3">
-                    <span className="text-orange-400 font-mono font-medium">{e.kg_co2e.toFixed(1)}</span>
-                  </td>
-                  <td className="py-2 pr-3 text-gw-muted hidden md:table-cell">
-                    {e.period_start && e.period_end
-                      ? `${e.period_start} → ${e.period_end}`
-                      : e.period_start || '—'}
-                  </td>
-                  <td className="py-2 pr-3 text-gw-muted hidden lg:table-cell max-w-[200px] truncate">
-                    {e.notes || '—'}
-                  </td>
-                  <td className="py-2 text-gw-muted">
-                    {new Date(parseInt(e.recorded_at) * 1000).toLocaleDateString('en-CA')}
-                  </td>
-                </tr>
+        /* BMS Integration tab */
+        <div className="space-y-4">
+          {/* Webhook info */}
+          <div className="bg-gw-dark border border-gw-border rounded-lg p-4">
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs font-bold px-2 py-0.5 rounded bg-gw-green/10 text-gw-green border border-gw-green/30">POST</span>
+              <code className="text-xs text-white font-mono">{ingestUrl}</code>
+            </div>
+            <p className="text-xs text-gw-muted mb-3">
+              Push endpoint for BMS systems that can send HTTP webhooks. Accepts fuel consumption data and computes kgCO2e automatically.
+              Use the bridge scripts below for systems that need a polling connector.
+            </p>
+            <pre className="bg-black/50 rounded p-3 text-xs font-mono text-gw-green overflow-x-auto">{`POST ${ingestUrl}
+X-GW-API-Key: gwk-YOUR_API_KEY_HERE
+Content-Type: application/json
+
+{
+  "tenant_id":   "${tenantId}",
+  "fuel_type":   "diesel",          // diesel | natural_gas | propane | hfo | gasoline | coal
+  "quantity":    450.5,             // liters (diesel/propane/HFO/gasoline), m³ (gas), kg (coal)
+  "period_start": "2024-06-01",     // optional ISO date
+  "period_end":   "2024-06-30",     // optional ISO date
+  "source":      "siemens_desigo",  // free-form label
+  "notes":       "Generator A"      // optional
+}`}</pre>
+          </div>
+
+          {/* Bridge script tabs */}
+          <div>
+            <p className="text-xs text-gw-muted mb-3">
+              If your BMS cannot push HTTP webhooks, run one of these bridge scripts on any machine with network access to your BMS.
+              They poll your BMS on a schedule and push results to GridWitness automatically.
+            </p>
+            <div className="flex gap-1 mb-3 border-b border-gw-border">
+              {([
+                ['rest',   'REST / JSON BMS', 'Siemens Desigo · Schneider · JCI Metasys · Niagara'],
+                ['modbus', 'Modbus TCP',       'Flow meters · Tank sensors · any Modbus device'],
+                ['mqtt',   'MQTT',             'IoT gateways · smart meters · SCADA (needs paho-mqtt)'],
+              ] as const).map(([t, label, tip]) => (
+                <button key={t} onClick={() => setBmsTab(t)}
+                  title={tip}
+                  className={`px-3 py-1.5 text-xs font-medium border-b-2 -mb-px transition-colors whitespace-nowrap ${
+                    bmsTab === t ? 'border-orange-400 text-orange-400' : 'border-transparent text-gw-muted hover:text-white'
+                  }`}>
+                  {label}
+                </button>
               ))}
-            </tbody>
-          </table>
+            </div>
+            <div className="relative">
+              <pre className="bg-gw-dark border border-gw-border text-gw-muted text-xs p-4 rounded-lg overflow-x-auto font-mono leading-relaxed max-h-96">
+                {bmsScripts[bmsTab]}
+              </pre>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(bmsScripts[bmsTab])
+                  setBmsCopied(true); setTimeout(() => setBmsCopied(false), 1500)
+                }}
+                className="absolute top-2 right-2 flex items-center gap-1 px-3 py-1 bg-gw-panel border border-gw-border hover:border-orange-400 hover:text-orange-400 text-gw-muted text-xs rounded"
+              >
+                <Copy className="w-3 h-3" />
+                {bmsCopied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-gw-muted">
+              Siemens Desigo CC API: <span className="text-white">Property Services → activate REST</span> ·
+              Schneider: <span className="text-white">EcoStruxure BE → API Portal</span> ·
+              JCI Metasys: <span className="text-white">Site Management Portal → API Access</span>
+            </p>
+          </div>
         </div>
       )}
 
       <p className="mt-4 text-xs text-gw-muted">
-        Emission factors: diesel 2.68 · natural gas 1.96 · propane 1.51 · HFO 3.18 · gasoline 2.31 · coal 2.50 kgCO2e/unit.
-        Source: ECCC National Inventory Report 2024.
+        Factors (kgCO2e/unit): diesel 2.68 · natural gas 1.96 · propane 1.51 · HFO 3.18 · gasoline 2.31 · coal 2.50 — ECCC NRI 2024.
       </p>
     </section>
   )
