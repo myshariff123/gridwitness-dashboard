@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { href: '/incidents',  label: 'Incidents'  },
   { href: '/settings',   label: 'Settings'   },
   { href: '/compliance', label: 'Compliance' },
+  { href: '/copilot',    label: 'Co-Pilot'   },
 ]
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ||
