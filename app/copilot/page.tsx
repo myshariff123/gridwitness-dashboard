@@ -143,7 +143,7 @@ export default function CopilotPage() {
       }
 
       const data = await res.json()
-      const reply = data.reply || data.message || 'No response from Co-Pilot.'
+      const reply = data.reply || data.response || data.message || 'No response from Co-Pilot.'
       setMessages(prev => [...prev, { role: 'assistant', content: reply, timestamp: new Date() }])
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Failed to reach Co-Pilot'
