@@ -10,6 +10,7 @@ import Nav from '@/components/Nav'
 import {
   Settings as SettingsIcon, Save, Cloud, Bell, Code,
   AlertCircle, ExternalLink, Copy, Loader, Shield, Zap, CheckCircle,
+  Flame, Plus,
 } from 'lucide-react'
 
 const API_BASE   = process.env.NEXT_PUBLIC_API_URL ||
@@ -98,6 +99,7 @@ export default function SettingsPage() {
         />
         <AwsAutoDiscoverySection tenantId={tenantId} setToast={setToast} />
         <AgentScriptsSection tenantId={tenantId} />
+        <Scope1Section   tenantId={tenantId} />
         <WebhookSection  tenantId={tenantId} />
         <ApiKeysSection  tenantId={tenantId} />
         <TeamSection     tenantId={tenantId} />
@@ -975,6 +977,292 @@ spec:
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
+    </section>
+  )
+}
+
+const SCOPE1_FUELS: Record<string, { label: string; unit: string; factor: number }> = {
+  diesel:      { label: 'Diesel',         unit: 'liters', factor: 2.68 },
+  natural_gas: { label: 'Natural Gas',    unit: 'm³',     factor: 1.96 },
+  propane:     { label: 'Propane (LPG)',  unit: 'liters', factor: 1.51 },
+  hfo:         { label: 'Heavy Fuel Oil', unit: 'liters', factor: 3.18 },
+  gasoline:    { label: 'Gasoline',       unit: 'liters', factor: 2.31 },
+  coal:        { label: 'Coal',           unit: 'kg',     factor: 2.50 },
+}
+
+interface Scope1Entry {
+  entry_id:    string
+  fuel_type:   string
+  quantity:    number
+  unit:        string
+  kg_co2e:     number
+  source:      string
+  period_start?: string
+  period_end?:   string
+  recorded_at:   string
+  notes?:        string
+}
+
+function Scope1Section({ tenantId }: { tenantId: string }) {
+  const [entries, setEntries]         = useState<Scope1Entry[]>([])
+  const [totalT, setTotalT]           = useState(0)
+  const [loading, setLoading]         = useState(true)
+  const [fuelType, setFuelType]       = useState('diesel')
+  const [quantity, setQuantity]       = useState('')
+  const [periodStart, setPeriodStart] = useState('')
+  const [periodEnd, setPeriodEnd]     = useState('')
+  const [notes, setNotes]             = useState('')
+  const [submitting, setSubmitting]   = useState(false)
+  const [formError, setFormError]     = useState('')
+  const [formSuccess, setFormSuccess] = useState('')
+  const [showForm, setShowForm]       = useState(false)
+
+  const fuel = SCOPE1_FUELS[fuelType]
+  const qty  = parseFloat(quantity) || 0
+  const preview = qty > 0 ? (qty * fuel.factor).toFixed(1) : null
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/scope1?limit=50`)
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      const d = await r.json()
+      setEntries(d.entries || [])
+      setTotalT(d.total_t_co2e || 0)
+    } catch {
+      setEntries([])
+    } finally { setLoading(false) }
+  }, [tenantId])
+
+  useEffect(() => { load() }, [load])
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!quantity || qty <= 0) { setFormError('Enter a quantity greater than 0'); return }
+    setSubmitting(true); setFormError(''); setFormSuccess('')
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/scope1`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fuel_type: fuelType, quantity: qty,
+          period_start: periodStart || undefined,
+          period_end:   periodEnd   || undefined,
+          notes:        notes       || undefined,
+          source:       'manual_entry',
+        }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
+      setFormSuccess(`Recorded: ${d.kg_co2e} kgCO2e from ${qty} ${fuel.unit} of ${fuel.label}`)
+      setQuantity(''); setPeriodStart(''); setPeriodEnd(''); setNotes('')
+      load()
+    } catch (err: unknown) {
+      setFormError(err instanceof Error ? err.message : 'Submission failed')
+    } finally { setSubmitting(false) }
+  }
+
+  return (
+    <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
+      <div className="flex items-start justify-between mb-4">
+        <div>
+          <h2 className="font-semibold text-white flex items-center gap-2">
+            <Flame className="w-4 h-4 text-orange-400" />
+            Scope 1 Emissions
+          </h2>
+          <p className="text-sm text-gw-muted mt-1">
+            Direct combustion: diesel generators, natural gas, propane. Factors from ECCC NRI.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowForm(s => !s)}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-orange-500/10 border border-orange-500/30 text-orange-400 hover:bg-orange-500/20 rounded-lg text-sm transition-colors"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          Log Entry
+        </button>
+      </div>
+
+      {/* Summary */}
+      <div className="grid grid-cols-3 gap-3 mb-5">
+        <div className="bg-gw-dark border border-gw-border rounded-lg p-3 text-center">
+          <div className="text-xs text-gw-muted mb-1">Total Scope 1</div>
+          <div className="text-lg font-bold text-orange-400">{totalT.toFixed(3)}</div>
+          <div className="text-xs text-gw-muted">tCO2e</div>
+        </div>
+        <div className="bg-gw-dark border border-gw-border rounded-lg p-3 text-center">
+          <div className="text-xs text-gw-muted mb-1">Entries</div>
+          <div className="text-lg font-bold text-white">{loading ? '…' : entries.length}</div>
+          <div className="text-xs text-gw-muted">records</div>
+        </div>
+        <div className="bg-gw-dark border border-gw-border rounded-lg p-3 text-center">
+          <div className="text-xs text-gw-muted mb-1">Scope</div>
+          <div className="text-sm font-bold text-white pt-1">GHG Protocol</div>
+          <div className="text-xs text-gw-muted">Scope 1 direct</div>
+        </div>
+      </div>
+
+      {/* Entry form */}
+      {showForm && (
+        <form onSubmit={submit} className="bg-gw-dark border border-gw-border rounded-lg p-4 mb-4 space-y-3">
+          <div className="text-sm font-medium text-white mb-1">New Fuel Entry</div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gw-muted block mb-1">Fuel Type</label>
+              <select
+                value={fuelType}
+                onChange={e => setFuelType(e.target.value)}
+                className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none"
+              >
+                {Object.entries(SCOPE1_FUELS).map(([k, v]) => (
+                  <option key={k} value={k}>{v.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-gw-muted block mb-1">
+                Quantity ({fuel.unit})
+              </label>
+              <div className="relative">
+                <input
+                  type="number" min="0" step="any"
+                  value={quantity}
+                  onChange={e => setQuantity(e.target.value)}
+                  placeholder="0"
+                  className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none"
+                />
+                {preview && (
+                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-orange-400 font-mono">
+                    ≈{preview} kg
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gw-muted block mb-1">Period Start (optional)</label>
+              <input
+                type="date"
+                value={periodStart}
+                onChange={e => setPeriodStart(e.target.value)}
+                className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gw-muted block mb-1">Period End (optional)</label>
+              <input
+                type="date"
+                value={periodEnd}
+                onChange={e => setPeriodEnd(e.target.value)}
+                className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-xs text-gw-muted block mb-1">Notes (optional)</label>
+            <input
+              type="text"
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="e.g. Generator test run — Building B"
+              className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-orange-400 focus:outline-none"
+            />
+          </div>
+
+          {preview && (
+            <div className="flex items-center gap-2 p-2.5 bg-orange-500/10 border border-orange-500/20 rounded text-xs">
+              <Flame className="w-3.5 h-3.5 text-orange-400 flex-shrink-0" />
+              <span className="text-orange-300">
+                {qty} {fuel.unit} of {fuel.label} × {fuel.factor} kgCO2e/{fuel.unit} =&nbsp;
+                <strong className="text-orange-400">{preview} kgCO2e</strong>
+                <span className="text-gw-muted ml-1">(ECCC NRI factor)</span>
+              </span>
+            </div>
+          )}
+
+          {formError   && <p className="text-xs text-red-400">{formError}</p>}
+          {formSuccess && <p className="text-xs text-gw-green">{formSuccess}</p>}
+
+          <div className="flex gap-2 pt-1">
+            <button
+              type="submit"
+              disabled={submitting}
+              className="flex items-center gap-1.5 px-4 py-1.5 bg-orange-500 hover:bg-orange-600 disabled:opacity-50 text-white rounded text-sm font-medium"
+            >
+              {submitting ? <Loader className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+              {submitting ? 'Recording…' : 'Record Entry'}
+            </button>
+            <button
+              type="button"
+              onClick={() => { setShowForm(false); setFormError(''); setFormSuccess('') }}
+              className="px-4 py-1.5 border border-gw-border text-gw-muted hover:text-white rounded text-sm"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* Entries table */}
+      {loading ? (
+        <div className="text-sm text-gw-muted py-3">Loading entries…</div>
+      ) : entries.length === 0 ? (
+        <div className="text-sm text-gw-muted py-3 text-center border border-dashed border-gw-border rounded-lg">
+          No Scope 1 entries yet. Click <strong className="text-white">Log Entry</strong> to record fuel usage.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="border-b border-gw-border">
+              <tr className="text-gw-muted text-left">
+                <th className="py-2 pr-3 font-medium">Fuel</th>
+                <th className="py-2 pr-3 font-medium">Quantity</th>
+                <th className="py-2 pr-3 font-medium">kgCO2e</th>
+                <th className="py-2 pr-3 font-medium hidden md:table-cell">Period</th>
+                <th className="py-2 pr-3 font-medium hidden lg:table-cell">Notes</th>
+                <th className="py-2 font-medium">Recorded</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gw-border/40">
+              {entries.map(e => (
+                <tr key={e.entry_id} className="hover:bg-gw-dark/50 transition-colors">
+                  <td className="py-2 pr-3">
+                    <span className="text-white font-medium">
+                      {SCOPE1_FUELS[e.fuel_type]?.label ?? e.fuel_type}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-3 font-mono text-white">
+                    {e.quantity} {e.unit}
+                  </td>
+                  <td className="py-2 pr-3">
+                    <span className="text-orange-400 font-mono font-medium">{e.kg_co2e.toFixed(1)}</span>
+                  </td>
+                  <td className="py-2 pr-3 text-gw-muted hidden md:table-cell">
+                    {e.period_start && e.period_end
+                      ? `${e.period_start} → ${e.period_end}`
+                      : e.period_start || '—'}
+                  </td>
+                  <td className="py-2 pr-3 text-gw-muted hidden lg:table-cell max-w-[200px] truncate">
+                    {e.notes || '—'}
+                  </td>
+                  <td className="py-2 text-gw-muted">
+                    {new Date(parseInt(e.recorded_at) * 1000).toLocaleDateString('en-CA')}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p className="mt-4 text-xs text-gw-muted">
+        Emission factors: diesel 2.68 · natural gas 1.96 · propane 1.51 · HFO 3.18 · gasoline 2.31 · coal 2.50 kgCO2e/unit.
+        Source: ECCC National Inventory Report 2024.
+      </p>
     </section>
   )
 }
