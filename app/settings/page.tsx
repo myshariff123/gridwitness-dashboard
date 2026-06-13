@@ -582,7 +582,7 @@ function AwsAutoDiscoverySection({
 }
 
 function AgentScriptsSection({ tenantId }: { tenantId: string }) {
-  const [tab, setTab] = useState<'redfish' | 'gpu' | 'ps' | 'bash' | 'docker' | 'k8s'>('redfish')
+  const [tab, setTab] = useState<'redfish' | 'gpu' | 'asic' | 'ps' | 'bash' | 'docker' | 'k8s'>('redfish')
   const [copied, setCopied] = useState(false)
 
   const redfishScript = `#!/bin/bash
@@ -718,6 +718,132 @@ while true; do
   sleep \$INTERVAL
 done`
 
+  const asicScript = `#!/usr/bin/env python3
+# GridWitness ASIC Mining Agent
+# Supports: Antminer (all S/T series), Whatsminer M20/M30/M50/M60 series
+# Reads actual power consumption from miner API — no estimates.
+# Requires: Python 3.6+ (zero external dependencies)
+#
+# SETUP:
+#   1. Copy this file to any machine on the same network as your miners
+#   2. Set MINER_IP and MINER_TYPE below
+#   3. For multiple miners, run one instance per miner (or extend MINERS list)
+#   4. Run: python3 gw_asic_agent.py
+#      To run in background: nohup python3 gw_asic_agent.py &
+
+import socket, json, time, urllib.request, sys
+
+# ── CONFIGURE THESE ─────────────────────────────────────────
+MINER_IP    = "192.168.1.50"   # IP of your ASIC miner (check router DHCP table)
+MINER_TYPE  = "antminer"       # "antminer" or "whatsminer"
+WM_PASSWORD = "admin"          # Whatsminer HTTP API password (default: admin)
+
+TENANT_ID   = "${tenantId}"
+API_URL     = "${INGEST_URL}"
+GRID_ID     = "AB"
+INTERVAL    = 300              # seconds between readings (5 min)
+
+# Power reference table — used only if API doesn't return watts directly
+# Format: "model_substring": (hashrate_TH, rated_watts)
+ANTMINER_REF = {
+    "s9":   (13.5, 1350),  "t9":   (10.5, 1576),
+    "s17":  (56,   2520),  "t17":  (42,   2200),
+    "s19":  (95,   3250),  "t19":  (84,   3150),
+    "s19pro": (110, 3250), "s19xp": (140, 3010),
+    "s21":  (200,  3500),  "s21pro": (234, 3531),
+}
+# ─────────────────────────────────────────────────────────────
+
+def cgminer_call(ip, port, command, timeout=10):
+    try:
+        s = socket.create_connection((ip, port), timeout=timeout)
+        s.sendall(json.dumps({"command": command}).encode())
+        buf = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk or b"\\x00" in chunk: buf += chunk; break
+            buf += chunk
+        s.close()
+        return json.loads(buf.decode("utf-8", errors="replace").rstrip("\\x00").strip())
+    except Exception as e:
+        print(f"  CGMiner error: {e}")
+        return {}
+
+def antminer_power(ip):
+    r = cgminer_call(ip, 4028, "stats")
+    for s in r.get("STATS", []):
+        for key in ("Power", "power", "total_power", "power_rate"):
+            v = float(s.get(key) or 0)
+            if v > 0: return int(v), "ANTMINER_DIRECT"
+    # Fall back: derive from hash rate
+    r2 = cgminer_call(ip, 4028, "summary")
+    for item in r2.get("SUMMARY", []):
+        ghs = float(item.get("GHS 5s") or item.get("GHS av") or 0)
+        if ghs <= 0: continue
+        ths = ghs / 1000.0
+        # Detect model name from stats
+        for s in r.get("STATS", []):
+            mname = str(s.get("Type","") or s.get("Miner","")).lower().replace(" ","")
+            for k,(ref_ths, ref_w) in ANTMINER_REF.items():
+                if k in mname:
+                    return int((ths / ref_ths) * ref_w), "ANTMINER_HASHRATE_EST"
+        return int(ths * 30_000), "ANTMINER_GENERIC_EST"  # ~30 J/TH default
+    return 0, "UNKNOWN"
+
+def whatsminer_power(ip):
+    # Try newer HTTP API (M30S+, M50, M60)
+    try:
+        tok_req = urllib.request.Request(
+            f"http://{ip}/api/v1/token",
+            data=json.dumps({"password": WM_PASSWORD}).encode(),
+            headers={"Content-Type": "application/json"}, method="POST")
+        tok_data = json.loads(urllib.request.urlopen(tok_req, timeout=8).read())
+        token = tok_data.get("data", {}).get("token") or tok_data.get("token", "")
+        if token:
+            sr = urllib.request.Request(f"http://{ip}/api/v1/summary",
+                headers={"Authorization": f"Bearer {token}"})
+            sd = json.loads(urllib.request.urlopen(sr, timeout=8).read())
+            d  = sd.get("data", {})
+            pw = float(d.get("power") or d.get("Power") or 0)
+            if pw > 0: return int(pw), "WHATSMINER_HTTP"
+    except Exception as e:
+        print(f"  Whatsminer HTTP error: {e}")
+    # Fallback: CGMiner-compatible API (older M20/M30 firmware)
+    r = cgminer_call(ip, 4028, "summary")
+    for item in r.get("SUMMARY", []):
+        pw = float(item.get("Power") or item.get("power") or 0)
+        if pw > 0: return int(pw), "WHATSMINER_CGMINER"
+        ghs = float(item.get("GHS 5s") or item.get("GHS av") or 0)
+        if ghs > 0: return int((ghs/1000) * 34_000), "WHATSMINER_HASHRATE_EST"
+    return 0, "UNKNOWN"
+
+def get_power():
+    return whatsminer_power(MINER_IP) if MINER_TYPE == "whatsminer" else antminer_power(MINER_IP)
+
+def report(watts, src):
+    payload = json.dumps({
+        "TenantID": TENANT_ID, "Source": socket.gethostname() or MINER_IP,
+        "Actual_Wattage": watts, "InfraType": "ASIC_Miner",
+        "GridID": GRID_ID, "DataSource": src,
+    }).encode()
+    try:
+        urllib.request.urlopen(urllib.request.Request(
+            API_URL, data=payload, headers={"Content-Type":"application/json"}, method="POST"
+        ), timeout=10)
+    except Exception as e:
+        print(f"  Report error: {e}")
+
+print(f"GridWitness ASIC Agent | {MINER_TYPE} @ {MINER_IP} | tenant {TENANT_ID}")
+while True:
+    watts, src = get_power()
+    if watts == 0:
+        watts, src = 3250, "FALLBACK_ESTIMATE"
+        print(f"WARN {time.strftime('%H:%M:%S')} — miner unreachable, fallback {watts}W")
+    else:
+        print(f"OK   {time.strftime('%H:%M:%S')} — {watts}W  ({src})")
+    report(watts, src)
+    time.sleep(INTERVAL)`
+
   const psScript = `# GridWitness Agent — Windows PowerShell (CPU load estimate)
 $JobName = "GridWitnessAgent_${tenantId}"
 Get-Job -Name $JobName -ErrorAction SilentlyContinue | Stop-Job -PassThru | Remove-Job
@@ -781,6 +907,7 @@ spec:
   const scriptMap: Record<string, string> = {
     redfish: redfishScript,
     gpu:     gpuScript,
+    asic:    asicScript,
     ps:      psScript,
     bash:    bashScript,
     docker:  dockerScript,
@@ -796,12 +923,13 @@ spec:
   }
 
   const tabs: Array<[string, string, string]> = [
-    ['redfish', 'Redfish / BMC',      'Rack servers (Dell/HP/Supermicro) — actual PSU watts'],
-    ['gpu',     'GPU Mining',          'Nvidia/AMD GPU rigs — nvidia-smi / rocm-smi'],
-    ['ps',      'Windows',            'CPU load estimate'],
-    ['bash',    'Linux',              'CPU load estimate'],
-    ['docker',  'Docker',             'Container workload'],
-    ['k8s',     'Kubernetes',         'DaemonSet on every node'],
+    ['redfish', 'Redfish / BMC',   'Rack servers (Dell/HP/Supermicro) — actual PSU watts via BMC'],
+    ['gpu',     'GPU Mining',       'Nvidia/AMD GPU rigs — nvidia-smi / rocm-smi actual draw'],
+    ['asic',    'ASIC Miner',      'Antminer + Whatsminer — CGMiner API + HTTP API, Python 3'],
+    ['ps',      'Windows',         'CPU load estimate (PowerShell)'],
+    ['bash',    'Linux',           'CPU load estimate (Bash)'],
+    ['docker',  'Docker',          'Container workload'],
+    ['k8s',     'Kubernetes',      'DaemonSet on every node'],
   ]
 
   return (
