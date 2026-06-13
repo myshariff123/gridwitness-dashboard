@@ -662,7 +662,7 @@ while true; do
   curl -s -X POST "\$API_URL" \\
     -H "Content-Type: application/json" \\
     -H "X-GW-API-Key: \${GW_API_KEY}" \\
-    -d "{\\"TenantID\\":\\"\$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":\$WATTS,\\"InfraType\\":\\"Physical_BMC\\",\\"GridID\\":\\"\$GRID_ID\\",\\"DataSource\\":\\"\$DATA_SOURCE\\"}" \\
+    -d "{\\"TenantID\\":\\"\$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":\$WATTS,\\"InfraType\\":\\"Physical_BMC\\",\\"GridID\\":\\"\$GRID_ID\\",\\"DataSource\\":\\"\$DATA_SOURCE\\",\\"api_key\\":\\"\$GW_API_KEY\\"}" \\
     > /dev/null 2>&1
 
   sleep \$INTERVAL
@@ -718,7 +718,7 @@ while true; do
   curl -s -X POST "\$API_URL" \\
     -H "Content-Type: application/json" \\
     -H "X-GW-API-Key: \${GW_API_KEY}" \\
-    -d "{\\"TenantID\\":\\"\$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":\$TOTAL_WATTS,\\"InfraType\\":\\"GPU_Mining_Rig\\",\\"GridID\\":\\"\$GRID_ID\\",\\"DataSource\\":\\"\$DATA_SOURCE\\"}" \\
+    -d "{\\"TenantID\\":\\"\$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":\$TOTAL_WATTS,\\"InfraType\\":\\"GPU_Mining_Rig\\",\\"GridID\\":\\"\$GRID_ID\\",\\"DataSource\\":\\"\$DATA_SOURCE\\",\\"api_key\\":\\"\$GW_API_KEY\\"}" \\
     > /dev/null 2>&1
 
   sleep \$INTERVAL
@@ -831,7 +831,7 @@ def report(watts, src):
     payload = json.dumps({
         "TenantID": TENANT_ID, "Source": socket.gethostname() or MINER_IP,
         "Actual_Wattage": watts, "InfraType": "ASIC_Miner",
-        "GridID": GRID_ID, "DataSource": src,
+        "GridID": GRID_ID, "DataSource": src, "api_key": GW_API_KEY,
     }).encode()
     try:
         urllib.request.urlopen(urllib.request.Request(
@@ -869,6 +869,7 @@ Start-Job -Name $JobName -ScriptBlock {
             $Payload = @{
                 TenantID = $TenantID; Source = $env:COMPUTERNAME
                 Actual_Wattage = $RealWattage; InfraType = "Private_DC"; GridID = "AB"
+                api_key = $ApiKey
             } | ConvertTo-Json -Compress
             Invoke-RestMethod -Uri $ApiUrl -Method Post -Body $Payload \`
                 -ContentType "application/json" \`
@@ -888,7 +889,7 @@ API_URL="${INGEST_URL}"
 while true; do
     LOAD=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\\([0-9.]*\\)%* id.*/\\1/" | awk '{print 100 - $1}')
     WATT=$(echo "35 + ($LOAD * 1.2)" | bc | awk '{print int($1+0.5)}')
-    PAYLOAD="{\\"TenantID\\":\\"$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":$WATT,\\"InfraType\\":\\"Private_DC\\",\\"GridID\\":\\"AB\\",\\"DataSource\\":\\"CPU_ESTIMATE\\"}"
+    PAYLOAD="{\\"TenantID\\":\\"$TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":$WATT,\\"InfraType\\":\\"Private_DC\\",\\"GridID\\":\\"AB\\",\\"DataSource\\":\\"CPU_ESTIMATE\\",\\"api_key\\":\\"$GW_API_KEY\\"}"
     curl -s -X POST $API_URL \\
       -H "Content-Type: application/json" \\
       -H "X-GW-API-Key: $GW_API_KEY" \\
@@ -905,7 +906,7 @@ echo "GridWitness Agent attached for ${tenantId}."`
     curl -s -X POST $GW_API_URL \\
       -H "Content-Type: application/json" \\
       -H "X-GW-API-Key: $GW_API_KEY" \\
-      -d "{\\"TenantID\\":\\"$GW_TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":50,\\"InfraType\\":\\"Container\\",\\"GridID\\":\\"AB\\"}"; \\
+      -d "{\\"TenantID\\":\\"$GW_TENANT_ID\\",\\"Source\\":\\"$(hostname)\\",\\"Actual_Wattage\\":50,\\"InfraType\\":\\"Container\\",\\"GridID\\":\\"AB\\",\\"api_key\\":\\"$GW_API_KEY\\"}"; \\
     sleep 300; done'`
 
   const k8sScript = `# Save as gridwitness-agent.yaml and apply with: kubectl apply -f gridwitness-agent.yaml
