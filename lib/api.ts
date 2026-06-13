@@ -214,8 +214,7 @@ export async function closeIncident(
 // ──────────────────────────────────────────────────────────────────────────
 export async function generateReport(
   tenantId: string, dateFrom: string, dateTo: string, frameworks: string[],
-): Promise<{ ok: boolean; message?: string }> {
-  // API Gateway SQS integration returns XML — handle without JSON parsing
+): Promise<{ ok: boolean; download_url?: string; report_id?: string; records?: number }> {
   const r = await fetch(`${API_BASE}/api/reports/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -225,8 +224,13 @@ export async function generateReport(
     }),
     cache: 'no-store',
   })
-  if (!r.ok) throw new Error(`HTTP ${r.status} — report queue failed`)
-  return { ok: true, message: 'Report queued for generation' }
+  if (!r.ok) throw new Error(`HTTP ${r.status} — report generation failed`)
+  try {
+    const d = await r.json()
+    return { ok: true, download_url: d.download_url, report_id: d.report_id, records: d.records }
+  } catch {
+    return { ok: true }
+  }
 }
 
 export async function getLatestReport(tenantId: string): Promise<{

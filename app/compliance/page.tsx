@@ -94,13 +94,20 @@ export default function CompliancePage() {
     setStatus('queueing'); setErrMsg(null); setPollTick(0)
     const prevReportId = reportId
     try {
-      await generateReport(tenantId, dateFrom, dateTo, selected)
-      setStatus('polling')
-      // Reset reportId so we detect when a new one arrives
-      setReportId(prevReportId)
+      const result = await generateReport(tenantId, dateFrom, dateTo, selected)
+      if (result.download_url) {
+        // Lambda returned synchronously with a pre-signed URL — no polling needed
+        setDownloadUrl(result.download_url)
+        setReportId(result.report_id || null)
+        setStatus('ready')
+      } else {
+        // Async path — fall back to polling
+        setStatus('polling')
+        setReportId(prevReportId)
+      }
     } catch (e: unknown) {
       setStatus('error')
-      setErrMsg(e instanceof Error ? e.message : 'Failed to queue report. Please try again.')
+      setErrMsg(e instanceof Error ? e.message : 'Failed to generate report. Please try again.')
     }
   }
 
@@ -213,7 +220,7 @@ export default function CompliancePage() {
               {(status === 'queueing' || status === 'polling') ? (
                 <>
                   <Loader className="w-4 h-4 animate-spin" />
-                  {status === 'queueing' ? 'Queueing…' : `Generating… (${pollTick * 5}s)`}
+                  {status === 'queueing' ? 'Generating PDF…' : `Polling… (${pollTick * 5}s)`}
                 </>
               ) : (
                 <>
