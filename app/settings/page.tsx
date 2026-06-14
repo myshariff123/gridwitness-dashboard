@@ -10,7 +10,8 @@ import Nav from '@/components/Nav'
 import {
   Settings as SettingsIcon, Save, Cloud, Bell, Code,
   AlertCircle, ExternalLink, Copy, Loader, Shield, Zap, CheckCircle,
-  Flame, Plus, Target, TrendingUp, AlertTriangle,
+  Flame, Plus, Target, TrendingUp, AlertTriangle, Lock, TrendingDown, Globe,
+  RefreshCw, BarChart2, Leaf,
 } from 'lucide-react'
 
 // Cloud is used in SETTINGS_TABS (Integrations tab icon)
@@ -24,12 +25,15 @@ type ThresholdSet = { carbon: number; load: number; price: number }
 type Thresholds   = Record<string, ThresholdSet>
 
 const SETTINGS_TABS = [
-  { id: 'overview',  label: 'Overview',        icon: SettingsIcon },
-  { id: 'agent',     label: 'Agent & Scope 1', icon: Zap          },
-  { id: 'integrations', label: 'Integrations', icon: Cloud        },
-  { id: 'apikeys',   label: 'API Keys',        icon: Shield       },
-  { id: 'budget',    label: 'Carbon Budget',   icon: Target       },
-  { id: 'team',      label: 'Team',            icon: Bell         },
+  { id: 'overview',     label: 'Overview',        icon: SettingsIcon },
+  { id: 'agent',        label: 'Agent & Scope 1', icon: Zap          },
+  { id: 'integrations', label: 'Integrations',    icon: Cloud        },
+  { id: 'apikeys',      label: 'API Keys',        icon: Shield       },
+  { id: 'budget',       label: 'Carbon Budget',   icon: Target       },
+  { id: 'targets',      label: 'SBTi Targets',    icon: Leaf         },
+  { id: 'scope3',       label: 'Scope 3 Cloud',   icon: Globe        },
+  { id: 'enforcement',  label: 'Enforcement',     icon: Lock         },
+  { id: 'team',         label: 'Team',            icon: Bell         },
 ] as const
 type SettingsTab = typeof SETTINGS_TABS[number]['id']
 
@@ -143,6 +147,18 @@ export default function SettingsPage() {
 
           {activeTab === 'budget' && <>
             <CarbonBudgetSection tenantId={tenantId} />
+          </>}
+
+          {activeTab === 'targets' && <>
+            <SBTiSection tenantId={tenantId} />
+          </>}
+
+          {activeTab === 'scope3' && <>
+            <Scope3Section tenantId={tenantId} />
+          </>}
+
+          {activeTab === 'enforcement' && <>
+            <EnforcementSection tenantId={tenantId} />
           </>}
 
           {activeTab === 'team' && <>
@@ -1859,5 +1875,529 @@ function ApiReferenceSection({ tenantId }: { tenantId: string }) {
         ))}
       </div>
     </section>
+  )
+}
+
+// ─── Enforcement Mode ────────────────────────────────────────────────────────
+
+function EnforcementSection({ tenantId }: { tenantId: string }) {
+  const [mode, setMode]       = useState<boolean | null>(null)
+  const [updatedAt, setUpdAt] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving]   = useState(false)
+  const [toast, setToast]     = useState<Toast>(null)
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/tenants/${tenantId}/enforcement`)
+      .then(r => r.json())
+      .then(d => { setMode(d.enforcement_mode ?? false); setUpdAt(d.updated_at ?? null) })
+      .catch(() => setMode(false))
+      .finally(() => setLoading(false))
+  }, [tenantId])
+
+  async function toggle() {
+    const next = !mode
+    setSaving(true); setToast(null)
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/enforcement`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enforcement_mode: next }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || 'Failed')
+      setMode(next)
+      setUpdAt(d.updated_at)
+      setToast({ type: 'success', text: d.message })
+    } catch (e: unknown) {
+      setToast({ type: 'error', text: e instanceof Error ? e.message : 'Failed to update' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
+        <h2 className="font-semibold text-white flex items-center gap-2 mb-1">
+          <Lock className="w-4 h-4 text-gw-green" />
+          Telemetry Enforcement Mode
+        </h2>
+        <p className="text-sm text-gw-muted mb-6">
+          Controls how the telemetry ingest pipeline handles records with invalid or missing API keys.
+        </p>
+
+        {loading ? (
+          <div className="flex items-center gap-2 text-gw-muted text-sm">
+            <Loader className="w-4 h-4 animate-spin" /> Loading…
+          </div>
+        ) : (
+          <div className="flex items-start justify-between gap-6">
+            <div className="flex-1">
+              <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium mb-3 ${
+                mode ? 'bg-red-500/10 text-red-400 border border-red-500/30'
+                     : 'bg-gw-green/10 text-gw-green border border-gw-green/30'
+              }`}>
+                {mode ? <Lock className="w-3.5 h-3.5" /> : <CheckCircle className="w-3.5 h-3.5" />}
+                {mode ? 'Enforcement Mode — ACTIVE' : 'Audit Mode — Active (default)'}
+              </div>
+              <p className="text-sm text-gw-muted max-w-lg">
+                {mode
+                  ? 'Records with invalid or missing API keys are silently discarded. No telemetry is written for unauthorized agents.'
+                  : 'Records with invalid or missing API keys are logged as warnings but still processed. All agents are accepted.'
+                }
+              </p>
+              {updatedAt && (
+                <p className="text-xs text-gw-muted/60 mt-2">
+                  Last updated: {new Date(updatedAt).toLocaleString()}
+                </p>
+              )}
+            </div>
+            <button
+              onClick={toggle}
+              disabled={saving || mode === null}
+              className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-sm transition-colors min-w-[140px] justify-center ${
+                saving ? 'bg-gw-border text-gw-muted cursor-wait'
+                       : mode
+                         ? 'bg-gw-dark border border-gw-green text-gw-green hover:bg-gw-green/10'
+                         : 'bg-red-500/20 border border-red-500/50 text-red-400 hover:bg-red-500/30'
+              }`}
+            >
+              {saving ? <Loader className="w-4 h-4 animate-spin" /> : <Lock className="w-4 h-4" />}
+              {saving ? 'Saving…' : mode ? 'Disable (→ Audit)' : 'Enable Enforcement'}
+            </button>
+          </div>
+        )}
+
+        {toast && (
+          <div className={`mt-4 p-3 rounded text-sm border ${
+            toast.type === 'success' ? 'bg-gw-green/10 border-gw-green/30 text-gw-green'
+                                     : 'bg-red-500/10 border-red-500/30 text-red-400'
+          }`}>{toast.text}</div>
+        )}
+      </section>
+
+      {mode && (
+        <section className="bg-red-500/5 border border-red-500/20 rounded-xl p-5">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+            <div>
+              <div className="text-white font-medium text-sm mb-1">Enforcement mode is active</div>
+              <ul className="text-xs text-red-400/80 space-y-1">
+                <li>• Telemetry records submitted without a valid API key are silently dropped</li>
+                <li>• Agents using a revoked or mismatched key appear to succeed (SQS ack) but data is not recorded</li>
+                <li>• Disable to return to audit-only mode where all records are accepted and issues are logged</li>
+              </ul>
+            </div>
+          </div>
+        </section>
+      )}
+
+      <section className="bg-gw-panel border border-gw-border rounded-xl p-5 text-sm text-gw-muted">
+        <h3 className="text-white font-semibold mb-3 text-sm">Mode Comparison</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="bg-gw-dark rounded-lg p-3">
+            <div className="text-gw-green font-medium text-xs mb-2">Audit Mode (default)</div>
+            <ul className="text-xs space-y-1">
+              <li>• All records processed regardless of key validity</li>
+              <li>• Invalid keys logged as WARNING in CloudWatch</li>
+              <li>• LastUsedAt updated only on valid keys</li>
+              <li>• Safe for onboarding new agents</li>
+            </ul>
+          </div>
+          <div className="bg-gw-dark rounded-lg p-3">
+            <div className="text-red-400 font-medium text-xs mb-2">Enforcement Mode</div>
+            <ul className="text-xs space-y-1">
+              <li>• Records with invalid keys silently discarded</li>
+              <li>• ENFORCEMENT_REJECT logged in CloudWatch</li>
+              <li>• LastUsedAt updated only on valid keys</li>
+              <li>• Recommended for production workloads</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+    </div>
+  )
+}
+
+// ─── Science-Based Targets (SBTi) ────────────────────────────────────────────
+
+function SBTiSection({ tenantId }: { tenantId: string }) {
+  const [target, setTarget]   = useState<Record<string, unknown> | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving]   = useState(false)
+  const [toast, setToast]     = useState<Toast>(null)
+
+  const [baseYear,   setBaseYear]   = useState(2024)
+  const [baselineEm, setBaselineEm] = useState('')
+  const [targetYear, setTargetYear] = useState(2030)
+  const [targetType, setTargetType] = useState<'1.5C' | 'WB2C' | 'CUSTOM'>('WB2C')
+  const [customRate, setCustomRate] = useState('')
+  const [sector,     setSector]     = useState('Data Centres')
+
+  const RATES: Record<string, number | null> = { '1.5C': 4.2, 'WB2C': 2.5, 'CUSTOM': null }
+
+  useEffect(() => {
+    fetch(`${API_BASE}/api/tenants/${tenantId}/sbti`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (d) {
+          setTarget(d)
+          setBaseYear(d.base_year ?? 2024)
+          setBaselineEm(String(d.baseline_tco2e ?? ''))
+          setTargetYear(d.target_year ?? 2030)
+          setTargetType(d.target_type ?? 'WB2C')
+          setCustomRate(d.annual_rate_pct ? String(d.annual_rate_pct) : '')
+          setSector(d.sector ?? 'Data Centres')
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [tenantId])
+
+  async function save() {
+    const baseline = parseFloat(baselineEm)
+    if (isNaN(baseline) || baseline <= 0) {
+      setToast({ type: 'error', text: 'Enter a valid baseline emissions value (tCO2e)' }); return
+    }
+    if (targetType === 'CUSTOM' && !parseFloat(customRate)) {
+      setToast({ type: 'error', text: 'Enter a custom annual reduction rate %' }); return
+    }
+    setSaving(true); setToast(null)
+    try {
+      const body: Record<string, unknown> = {
+        base_year: baseYear, baseline_tco2e: baseline,
+        target_year: targetYear, target_type: targetType, sector,
+      }
+      if (targetType === 'CUSTOM') body.annual_reduction_rate = parseFloat(customRate)
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/sbti`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || 'Failed')
+      setToast({ type: 'success', text: 'SBTi target saved. Refreshing trajectory…' })
+      const r2 = await fetch(`${API_BASE}/api/tenants/${tenantId}/sbti`)
+      if (r2.ok) setTarget(await r2.json())
+    } catch (e: unknown) {
+      setToast({ type: 'error', text: e instanceof Error ? e.message : 'Failed to save' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const trajectoryData = target
+    ? (target.trajectory as Array<{ year: number; target_tco2e: number }>)
+    : null
+  const baseline    = target ? Number(target.baseline_tco2e) : 0
+  const currentYear = new Date().getFullYear()
+
+  return (
+    <div className="space-y-6">
+      <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
+        <h2 className="font-semibold text-white flex items-center gap-2 mb-1">
+          <Leaf className="w-4 h-4 text-gw-green" />
+          Science-Based Targets (SBTi)
+        </h2>
+        <p className="text-sm text-gw-muted mb-5">
+          Set emission reduction targets aligned with the Paris Agreement via the Science Based Targets initiative.
+        </p>
+
+        {loading ? (
+          <div className="flex items-center gap-2 text-gw-muted text-sm">
+            <Loader className="w-4 h-4 animate-spin" /> Loading…
+          </div>
+        ) : (
+          <div className="space-y-5">
+            <div>
+              <label className="block text-xs uppercase tracking-wider text-gw-muted mb-2">Target Pathway</label>
+              <div className="flex gap-2 flex-wrap">
+                {(['1.5C', 'WB2C', 'CUSTOM'] as const).map(t => (
+                  <button key={t} onClick={() => setTargetType(t)}
+                    className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                      targetType === t
+                        ? 'bg-gw-green/10 border-gw-green text-gw-green'
+                        : 'bg-gw-dark border-gw-border text-gw-muted hover:border-gw-green/40'
+                    }`}>
+                    {t === '1.5C' ? '1.5°C Pathway' : t === 'WB2C' ? 'Well-Below 2°C' : 'Custom Rate'}
+                    {RATES[t] && <span className="text-xs ml-1 opacity-70">({RATES[t]}%/yr)</span>}
+                  </button>
+                ))}
+              </div>
+              {targetType === 'CUSTOM' && (
+                <div className="mt-3 flex items-center gap-3">
+                  <label className="text-xs text-gw-muted whitespace-nowrap">Annual reduction %</label>
+                  <input type="number" value={customRate} onChange={e => setCustomRate(e.target.value)}
+                    min={0} max={20} step={0.1} placeholder="e.g. 3.5"
+                    className="w-28 bg-gw-dark border border-gw-border rounded px-3 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none" />
+                  <span className="text-xs text-gw-muted">% per year</span>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs uppercase tracking-wider text-gw-muted mb-1">Base Year</label>
+                <input type="number" value={baseYear} onChange={e => setBaseYear(parseInt(e.target.value))}
+                  min={2015} max={2025}
+                  className="w-full bg-gw-dark border border-gw-border rounded px-3 py-2 text-sm text-white focus:border-gw-green focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs uppercase tracking-wider text-gw-muted mb-1">Baseline Emissions (tCO2e)</label>
+                <input type="number" value={baselineEm} onChange={e => setBaselineEm(e.target.value)}
+                  min={0} step={0.01} placeholder="e.g. 125.5"
+                  className="w-full bg-gw-dark border border-gw-border rounded px-3 py-2 text-sm text-white focus:border-gw-green focus:outline-none" />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs uppercase tracking-wider text-gw-muted mb-1">Target Year</label>
+                <input type="number" value={targetYear} onChange={e => setTargetYear(parseInt(e.target.value))}
+                  min={2025} max={2050}
+                  className="w-full bg-gw-dark border border-gw-border rounded px-3 py-2 text-sm text-white focus:border-gw-green focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs uppercase tracking-wider text-gw-muted mb-1">Sector</label>
+                <input type="text" value={sector} onChange={e => setSector(e.target.value)}
+                  className="w-full bg-gw-dark border border-gw-border rounded px-3 py-2 text-sm text-white focus:border-gw-green focus:outline-none" />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button onClick={save} disabled={saving}
+                className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-sm transition-colors ${
+                  saving ? 'bg-gw-border text-gw-muted cursor-wait' : 'bg-gw-green text-gw-dark hover:bg-gw-green/90'
+                }`}>
+                {saving ? <Loader className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                {saving ? 'Saving…' : 'Save Target'}
+              </button>
+              {target && (
+                <span className="text-xs text-gw-muted">
+                  {target.total_reduction_pct as number}% total reduction by {targetYear}
+                </span>
+              )}
+            </div>
+
+            {toast && (
+              <div className={`p-3 rounded text-sm border ${
+                toast.type === 'success' ? 'bg-gw-green/10 border-gw-green/30 text-gw-green'
+                                         : 'bg-red-500/10 border-red-500/30 text-red-400'
+              }`}>{toast.text}</div>
+            )}
+          </div>
+        )}
+      </section>
+
+      {trajectoryData && trajectoryData.length > 0 && baseline > 0 && (
+        <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
+          <h3 className="font-semibold text-white flex items-center gap-2 mb-4">
+            <TrendingDown className="w-4 h-4 text-gw-green" />
+            Decarbonisation Trajectory
+          </h3>
+          <div className="space-y-2">
+            {trajectoryData.map(t => {
+              const pct = baseline > 0 ? Math.round((t.target_tco2e / baseline) * 100) : 0
+              const isCurrent = t.year === currentYear
+              const reductionPct = Math.round(((baseline - t.target_tco2e) / baseline) * 100)
+              return (
+                <div key={t.year} className={`flex items-center gap-3 ${isCurrent ? 'opacity-100' : 'opacity-70'}`}>
+                  <div className={`w-12 text-xs font-mono font-medium ${isCurrent ? 'text-gw-green' : 'text-gw-muted'}`}>
+                    {t.year}{isCurrent ? ' ▶' : ''}
+                  </div>
+                  <div className="flex-1 h-4 bg-gw-dark rounded-full overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all ${isCurrent ? 'bg-gw-green' : 'bg-gw-green/30'}`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <div className="w-20 text-right text-xs text-gw-muted font-mono">
+                    {t.target_tco2e.toFixed(1)} tCO2e
+                  </div>
+                  <div className={`w-16 text-right text-xs font-medium ${reductionPct >= 42 ? 'text-gw-green' : 'text-amber-400'}`}>
+                    −{reductionPct}%
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <p className="text-xs text-gw-muted mt-4">
+            Pathway: {target?.target_type as string} · {target?.annual_rate_pct as number}% annual absolute reduction
+            · Baseline: {baseline} tCO2e ({baseYear})
+          </p>
+        </section>
+      )}
+    </div>
+  )
+}
+
+// ─── Scope 3 AWS Cloud ───────────────────────────────────────────────────────
+
+function Scope3Section({ tenantId }: { tenantId: string }) {
+  const now = new Date()
+  const defaultMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
+  const [yearMonth, setYearMonth] = useState(defaultMonth)
+  const [data, setData]           = useState<Record<string, unknown> | null>(null)
+  const [loading, setLoading]     = useState(false)
+  const [syncing, setSyncing]     = useState(false)
+  const [toast, setToast]         = useState<Toast>(null)
+
+  async function load(ym: string) {
+    setLoading(true); setToast(null)
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/scope3?year_month=${ym}`)
+      if (r.status === 404) { setData(null); return }
+      const d = await r.json()
+      if (r.ok) setData(d)
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function sync() {
+    setSyncing(true); setToast(null)
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/scope3/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ year_month: yearMonth }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || 'Sync failed')
+      setData(d)
+      setToast({ type: 'success', text: `Synced ${yearMonth}: ${d.total_tco2e} tCO2e from AWS` })
+    } catch (e: unknown) {
+      setToast({ type: 'error', text: e instanceof Error ? e.message : 'Sync failed' })
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  useEffect(() => { load(yearMonth) }, [yearMonth])
+
+  const byRegion = data?.ByRegion
+    ? (typeof data.ByRegion === 'string'
+        ? JSON.parse(data.ByRegion as string)
+        : data.ByRegion) as Record<string, { cost_usd: number; kwh: number; kg_co2: number; intensity_gco2_kwh: number }>
+    : null
+
+  const totalKgCO2 = byRegion
+    ? Object.values(byRegion).reduce((s, r) => s + r.kg_co2, 0)
+    : 0
+
+  return (
+    <div className="space-y-6">
+      <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
+        <h2 className="font-semibold text-white flex items-center gap-2 mb-1">
+          <Globe className="w-4 h-4 text-gw-green" />
+          Scope 3 — AWS Cloud Emissions (Category 11)
+        </h2>
+        <p className="text-sm text-gw-muted mb-5">
+          Estimates upstream cloud carbon from AWS compute spend using Cost Explorer and regional grid intensity factors.
+        </p>
+
+        <div className="flex items-end gap-3">
+          <div>
+            <label className="block text-xs uppercase tracking-wider text-gw-muted mb-1">Month</label>
+            <input type="month" value={yearMonth} onChange={e => setYearMonth(e.target.value)}
+              className="bg-gw-dark border border-gw-border rounded px-3 py-2 text-sm text-white focus:border-gw-green focus:outline-none" />
+          </div>
+          <button onClick={sync} disabled={syncing}
+            className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium text-sm transition-colors ${
+              syncing ? 'bg-gw-border text-gw-muted cursor-wait' : 'bg-gw-green text-gw-dark hover:bg-gw-green/90'
+            }`}>
+            {syncing ? <Loader className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+            {syncing ? 'Syncing…' : 'Sync from AWS'}
+          </button>
+          {data && (
+            <div className="text-xs text-gw-muted pb-1">
+              Last synced: {(data.SyncedAt as string)?.slice(0, 16).replace('T', ' ')} UTC
+            </div>
+          )}
+        </div>
+
+        {toast && (
+          <div className={`mt-4 p-3 rounded text-sm border ${
+            toast.type === 'success' ? 'bg-gw-green/10 border-gw-green/30 text-gw-green'
+                                     : 'bg-red-500/10 border-red-500/30 text-red-400'
+          }`}>{toast.text}</div>
+        )}
+      </section>
+
+      {loading && (
+        <div className="flex items-center gap-2 text-gw-muted text-sm p-4">
+          <Loader className="w-4 h-4 animate-spin" /> Loading…
+        </div>
+      )}
+
+      {data && !loading && (
+        <>
+          <section className="grid grid-cols-3 gap-4">
+            {[
+              { label: 'AWS Compute Spend', value: `$${Number(data.TotalCostUSD ?? 0).toFixed(2)}`, sub: yearMonth },
+              { label: 'Estimated Energy', value: `${Number(data.TotalKWh ?? 0).toFixed(1)} kWh`, sub: 'from compute' },
+              { label: 'Scope 3 Cat. 11', value: `${Number(data.TotalTCO2e ?? 0).toFixed(4)} tCO2e`, sub: 'cloud carbon' },
+            ].map(kpi => (
+              <div key={kpi.label} className="bg-gw-panel border border-gw-border rounded-xl p-4">
+                <div className="text-xs text-gw-muted uppercase tracking-wider mb-1">{kpi.label}</div>
+                <div className="text-xl font-bold text-white">{kpi.value}</div>
+                <div className="text-xs text-gw-muted mt-1">{kpi.sub}</div>
+              </div>
+            ))}
+          </section>
+
+          {byRegion && Object.keys(byRegion).length > 0 && (
+            <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
+              <h3 className="font-semibold text-white flex items-center gap-2 mb-4">
+                <BarChart2 className="w-4 h-4 text-gw-green" />
+                Emissions by AWS Region
+              </h3>
+              <div className="space-y-3">
+                {Object.entries(byRegion)
+                  .sort(([, a], [, b]) => b.kg_co2 - a.kg_co2)
+                  .map(([region, rv]) => {
+                    const pct = totalKgCO2 > 0 ? (rv.kg_co2 / totalKgCO2) * 100 : 0
+                    return (
+                      <div key={region}>
+                        <div className="flex items-center justify-between text-xs mb-1">
+                          <span className="font-mono text-white">{region}</span>
+                          <div className="flex items-center gap-4 text-gw-muted">
+                            <span>${rv.cost_usd.toFixed(2)}</span>
+                            <span>{rv.kwh.toFixed(1)} kWh</span>
+                            <span className="text-gw-green font-medium">{rv.kg_co2.toFixed(2)} kgCO2</span>
+                            <span className="text-xs opacity-60">{rv.intensity_gco2_kwh} gCO2/kWh</span>
+                          </div>
+                        </div>
+                        <div className="h-2 bg-gw-dark rounded-full overflow-hidden">
+                          <div className="h-full bg-gw-green/50 rounded-full" style={{ width: `${pct}%` }} />
+                        </div>
+                      </div>
+                    )
+                  })}
+              </div>
+            </section>
+          )}
+
+          <section className="bg-gw-panel border border-gw-border rounded-xl p-5 text-xs text-gw-muted">
+            <div className="font-medium text-white mb-1 text-sm">Methodology</div>
+            <p>{data.Methodology as string}</p>
+          </section>
+        </>
+      )}
+
+      {!data && !loading && (
+        <section className="bg-gw-panel border border-gw-border rounded-xl p-8 text-center">
+          <Globe className="w-8 h-8 text-gw-muted mx-auto mb-3" />
+          <p className="text-gw-muted text-sm">No data for {yearMonth}.</p>
+          <p className="text-xs text-gw-muted/60 mt-1">
+            Click <strong className="text-white">Sync from AWS</strong> to pull Cost Explorer data.
+            Requires <code>ce:GetCostAndUsage</code> access in your linked account.
+          </p>
+        </section>
+      )}
+    </div>
   )
 }
