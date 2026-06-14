@@ -524,11 +524,21 @@ function BoardAttestationSection({ tenantId }: { tenantId: string }) {
                   </td>
                   <td className="py-2">
                     {a.SealHash ? (
-                      <span className="font-mono text-gw-green text-xs">{a.SealHash.slice(0,16)}…</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-mono text-gw-green text-xs" title={a.SealHash}>
+                          {a.SealHash.slice(0,8)}&hellip;{a.SealHash.slice(-8)}
+                        </span>
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(a.SealHash!); }}
+                          className="text-[10px] text-gw-muted hover:text-gw-green underline shrink-0"
+                          title="Copy full SHA-256 seal hash">
+                          copy
+                        </button>
+                      </div>
                     ) : a.AttestationLink ? (
                       <button onClick={() => copyLink(a.AttestationLink!)}
                         className="text-xs text-gw-muted hover:text-gw-green underline">
-                        Copy link
+                        Send link
                       </button>
                     ) : '—'}
                   </td>

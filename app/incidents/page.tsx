@@ -10,6 +10,11 @@ import {
   type Incident, type GridSnapshot, DEFAULT_GRID_THRESHOLDS,
 } from '@/lib/api'
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ||
+                 'https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com'
+
+type LiveThresholds = Record<string, { carbon: number; load: number; price: number }>
+
 type FilterMode = 'all' | 'open' | 'closed'
 type SourceGroup = 'GRID_THRESHOLD_MONITOR' | 'CARBON_BUDGET_MONITOR' | 'POWER_ANOMALY_DETECTOR' | 'OTHER'
 
@@ -80,13 +85,14 @@ const GROUP_ORDER: SourceGroup[] = [
 // ─── page component ────────────────────────────────────────────────────────
 
 export default function IncidentsPage() {
-  const [tenantId,  setTenantId]  = useState('GW-NIMBL-AEB47A92')
-  const [incidents, setIncidents] = useState<Incident[]>([])
-  const [gridData,  setGridData]  = useState<GridSnapshot[]>([])
-  const [loading,   setLoading]   = useState(true)
-  const [filter,    setFilter]    = useState<FilterMode>('all')
-  const [lastFetch, setLastFetch] = useState<Date>(new Date())
-  const [countdown, setCountdown] = useState(30)
+  const [tenantId,    setTenantId]   = useState('GW-NIMBL-AEB47A92')
+  const [incidents,   setIncidents]  = useState<Incident[]>([])
+  const [gridData,    setGridData]   = useState<GridSnapshot[]>([])
+  const [liveThresh,  setLiveThresh] = useState<LiveThresholds | null>(null)
+  const [loading,     setLoading]    = useState(true)
+  const [filter,      setFilter]     = useState<FilterMode>('all')
+  const [lastFetch,   setLastFetch]  = useState<Date>(new Date())
+  const [countdown,   setCountdown]  = useState(30)
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -101,15 +107,20 @@ export default function IncidentsPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [data, grid] = await Promise.all([
+      const [data, grid, threshRes] = await Promise.all([
         listIncidents(
           tenantId,
           filter === 'all' ? undefined : filter === 'open' ? 'OPEN' : 'CLOSED',
         ),
         getLiveGridData(),
+        fetch(`${API_BASE}/api/tenants/${tenantId}/thresholds`).catch(() => null),
       ])
       setIncidents(data)
       setGridData(grid)
+      if (threshRes && threshRes.ok) {
+        const td = await threshRes.json()
+        setLiveThresh(td.grid_thresholds || null)
+      }
       setLastFetch(new Date())
       setCountdown(30)
     } catch (e) {
@@ -189,7 +200,7 @@ export default function IncidentsPage() {
         </div>
 
         {/* Live Grid Status Panel */}
-        <LiveGridPanel gridData={gridData} />
+        <LiveGridPanel gridData={gridData} liveThresh={liveThresh} />
 
         {/* Counters + filter */}
         <div className="flex items-center justify-between flex-wrap gap-3">
@@ -270,18 +281,39 @@ export default function IncidentsPage() {
 
 // ─── Live Grid Status Panel ────────────────────────────────────────────────
 
-function LiveGridPanel({ gridData }: { gridData: GridSnapshot[] }) {
+function LiveGridPanel({ gridData, liveThresh }: {
+  gridData: GridSnapshot[]
+  liveThresh: LiveThresholds | null
+}) {
   const zoneMap = Object.fromEntries(gridData.map(g => [g.GridID, g]))
+
+  // Build effective threshold list: prefer live (from Settings) over hardcoded defaults
+  const effectiveCfgs = DEFAULT_GRID_THRESHOLDS.map(cfg => {
+    const live = liveThresh?.[cfg.gridId]
+    return {
+      gridId:       cfg.gridId,
+      carbonAlert:  live?.carbon ?? cfg.carbonAlert,
+      loadAlert:    live?.load   ?? cfg.loadAlert,
+      priceAlert:   live?.price  ?? cfg.priceAlert,
+      fromSettings: !!live,
+    }
+  })
 
   return (
     <div className="bg-gw-panel border border-gw-border rounded-xl p-4">
       <div className="flex items-center gap-2 mb-3">
         <TrendingUp className="w-4 h-4 text-gw-green" />
         <span className="text-xs font-semibold text-white">Live Grid Carbon Intensity vs Configured Thresholds</span>
-        <span className="text-xs text-gw-muted ml-auto">AESO live · 5 min</span>
+        <div className="ml-auto flex items-center gap-2">
+          {liveThresh
+            ? <span className="text-xs text-gw-green border border-gw-green/30 px-1.5 py-0.5 rounded">Using your Settings</span>
+            : <span className="text-xs text-amber-400 border border-amber-400/30 px-1.5 py-0.5 rounded">Using defaults — configure in Settings</span>
+          }
+          <span className="text-xs text-gw-muted">AESO live · 5 min</span>
+        </div>
       </div>
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        {DEFAULT_GRID_THRESHOLDS.map(cfg => {
+        {effectiveCfgs.map(cfg => {
           const snap      = zoneMap[cfg.gridId]
           const intensity = snap ? (snap.CarbonIntensity ?? snap.CurrentIntensity ?? 0) : null
           const threshold = cfg.carbonAlert
@@ -305,7 +337,6 @@ function LiveGridPanel({ gridData }: { gridData: GridSnapshot[] }) {
                   <span className="font-normal text-gw-muted"> gCO₂</span>
                 </span>
               </div>
-              {/* Intensity bar */}
               <div className="relative h-1.5 bg-gw-border/50 rounded-full overflow-visible">
                 {pct !== null && (
                   <div
@@ -313,12 +344,12 @@ function LiveGridPanel({ gridData }: { gridData: GridSnapshot[] }) {
                     style={{ width: `${Math.min(pct, 100)}%` }}
                   />
                 )}
-                {/* Threshold marker at 100% */}
                 <div className="absolute top-1/2 right-0 -translate-y-1/2 w-0.5 h-3 bg-gw-border rounded" />
               </div>
               <div className="flex items-center justify-between mt-1">
                 <span className="text-xs text-gw-muted">
-                  {pct !== null ? `${Math.round(pct)}%` : '—'} of {threshold}
+                  {pct !== null ? `${Math.round(pct)}%` : '—'} of <span className="font-mono">{threshold}</span>
+                  {cfg.fromSettings && <span className="ml-1 text-gw-green text-[10px]">★</span>}
                 </span>
                 <span className={`text-xs font-medium ${textColor}`}>
                   {intensity === null ? 'No data' : breached ? 'BREACH' : warning ? 'WARNING' : 'OK'}
@@ -328,6 +359,9 @@ function LiveGridPanel({ gridData }: { gridData: GridSnapshot[] }) {
           )
         })}
       </div>
+      {liveThresh && (
+        <p className="text-[10px] text-gw-muted mt-2">★ Threshold values from your Settings · <a href="/settings" className="underline hover:text-gw-green">Edit thresholds</a></p>
+      )}
     </div>
   )
 }
