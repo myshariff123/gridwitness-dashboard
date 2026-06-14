@@ -12,6 +12,9 @@ import {
   generateReport, getLatestReport,
 } from '@/lib/api'
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL ||
+  'https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com'
+
 const FRAMEWORKS = [
   { id: 'OSFI_B15',  label: 'OSFI Guideline B-15',  required: true,  desc: 'Climate Risk Management' },
   { id: 'BILL_C59',  label: 'Bill C-59 (Canada)',   required: true,  desc: 'Anti-Greenwashing' },
