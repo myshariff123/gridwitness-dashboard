@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { href: '/incidents',  label: 'Incidents'  },
   { href: '/settings',   label: 'Settings'   },
   { href: '/compliance', label: 'Compliance' },
+  { href: '/calendar',   label: 'Calendar'   },
   { href: '/copilot',    label: 'Co-Pilot'   },
 ]
 

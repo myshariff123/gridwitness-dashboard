@@ -11,7 +11,7 @@ import {
   Settings as SettingsIcon, Save, Cloud, Bell, Code,
   AlertCircle, ExternalLink, Copy, Loader, Shield, Zap, CheckCircle,
   Flame, Plus, Target, TrendingUp, AlertTriangle, Lock, TrendingDown, Globe,
-  RefreshCw, BarChart2, Leaf,
+  RefreshCw, BarChart2, Leaf, DollarSign,
 } from 'lucide-react'
 
 // Cloud is used in SETTINGS_TABS (Integrations tab icon)
@@ -33,6 +33,7 @@ const SETTINGS_TABS = [
   { id: 'targets',      label: 'SBTi Targets',    icon: Leaf         },
   { id: 'scope3',       label: 'Scope 3 Cloud',   icon: Globe        },
   { id: 'enforcement',  label: 'Enforcement',     icon: Lock         },
+  { id: 'carbontax',   label: 'Carbon Tax',      icon: DollarSign   },
   { id: 'team',         label: 'Team',            icon: Bell         },
 ] as const
 type SettingsTab = typeof SETTINGS_TABS[number]['id']
@@ -159,6 +160,10 @@ export default function SettingsPage() {
 
           {activeTab === 'enforcement' && <>
             <EnforcementSection tenantId={tenantId} />
+          </>}
+
+          {activeTab === 'carbontax' && <>
+            <CarbonTaxSection tenantId={tenantId} />
           </>}
 
           {activeTab === 'team' && <>
@@ -2402,6 +2407,255 @@ function Scope3Section({ tenantId }: { tenantId: string }) {
           </p>
         </section>
       )}
+    </div>
+  )
+}
+
+// ─── Carbon Tax Section ────────────────────────────────────────────────────
+
+const CARBON_PRICE_SCHEDULE = [
+  { year: 2023, price: 65  },
+  { year: 2024, price: 80  },
+  { year: 2025, price: 95  },
+  { year: 2026, price: 110 },
+  { year: 2027, price: 125 },
+  { year: 2028, price: 140 },
+  { year: 2029, price: 155 },
+  { year: 2030, price: 170 },
+]
+
+interface CarbonTaxData {
+  tax_year:     number
+  as_of:        string
+  ytd_fraction: number
+  emissions: {
+    scope1_kgco2e:       number
+    scope2_kgco2e:       number
+    scope3_cat11_kgco2e: number
+    ytd_total_tco2e:     number
+    annualized_tco2e:    number
+  }
+  current_year: {
+    year:                    number
+    price_per_tco2e_cad:     number
+    ytd_liability_cad:       number
+    annualized_liability_cad:number
+  }
+  flat_projection: Array<{ year:number; price_cad:number; tco2e:number; liability_cad:number }>
+  sbti_projection?: Array<{ year:number; price_cad:number; tco2e:number; liability_cad:number }>
+  sbti_savings_2030_cad?: number
+}
+
+function CarbonTaxSection({ tenantId }: { tenantId: string }) {
+  const [data,    setData]    = useState<CarbonTaxData | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [year,    setYear]    = useState(new Date().getFullYear())
+  const [view,    setView]    = useState<'flat' | 'sbti'>('flat')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const r = await fetch(
+        `${API_BASE}/api/tenants/${tenantId}/carbon-tax?year=${year}`,
+        { cache: 'no-store' }
+      )
+      if (r.ok) setData(await r.json())
+    } catch (e) { console.error('Carbon tax load failed:', e) }
+    finally { setLoading(false) }
+  }, [tenantId, year])
+
+  useEffect(() => { load() }, [load])
+
+  const proj = view === 'sbti' && data?.sbti_projection
+    ? data.sbti_projection
+    : data?.flat_projection ?? []
+
+  const maxLiability = proj.length ? Math.max(...proj.map(p => p.liability_cad)) : 1
+
+  return (
+    <div className="space-y-6">
+      <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
+        <div className="flex items-center justify-between mb-5 flex-wrap gap-3">
+          <div>
+            <h2 className="text-white font-semibold flex items-center gap-2">
+              <DollarSign className="w-4 h-4 text-gw-green" />
+              Carbon Tax Liability Calculator
+            </h2>
+            <p className="text-xs text-gw-muted mt-1">
+              Canada federal carbon backstop (GGPPA) · $110/tCO₂e in 2026 → $170/tCO₂e in 2030
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={year}
+              onChange={e => setYear(Number(e.target.value))}
+              className="bg-gw-dark border border-gw-border rounded px-2 py-1 text-sm text-white focus:outline-none focus:border-gw-green">
+              {[2024, 2025, 2026].map(y => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+            <button onClick={load}
+              className="flex items-center gap-1.5 text-xs border border-gw-border text-gw-muted px-3 py-1.5 rounded hover:border-gw-green hover:text-gw-green transition-colors">
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        {/* KPI cards */}
+        {data && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+            <div className="bg-gw-dark border border-gw-border rounded-lg p-3">
+              <div className="text-xs text-gw-muted">YTD Liability ({year})</div>
+              <div className="text-xl font-bold text-white mt-1">
+                ${data.current_year.ytd_liability_cad.toFixed(2)}
+                <span className="text-xs text-gw-muted font-normal ml-1">CAD</span>
+              </div>
+              <div className="text-xs text-gw-muted mt-0.5">
+                {(data.ytd_fraction * 100).toFixed(0)}% of year elapsed
+              </div>
+            </div>
+            <div className="bg-gw-dark border border-gw-border rounded-lg p-3">
+              <div className="text-xs text-gw-muted">Annualised ({year})</div>
+              <div className="text-xl font-bold text-yellow-400 mt-1">
+                ${data.current_year.annualized_liability_cad.toFixed(2)}
+                <span className="text-xs text-gw-muted font-normal ml-1">CAD</span>
+              </div>
+              <div className="text-xs text-gw-muted mt-0.5">
+                @ ${data.current_year.price_per_tco2e_cad}/tCO₂e
+              </div>
+            </div>
+            <div className="bg-gw-dark border border-gw-border rounded-lg p-3">
+              <div className="text-xs text-gw-muted">2030 Exposure (flat)</div>
+              <div className="text-xl font-bold text-orange-400 mt-1">
+                ${(data.flat_projection.find(p => p.year === 2030)?.liability_cad ?? 0).toFixed(2)}
+                <span className="text-xs text-gw-muted font-normal ml-1">CAD</span>
+              </div>
+              <div className="text-xs text-gw-muted mt-0.5">@ $170/tCO₂e (2030)</div>
+            </div>
+            <div className="bg-gw-dark border border-gw-border rounded-lg p-3">
+              <div className="text-xs text-gw-muted">Total tCO₂e (annualised)</div>
+              <div className="text-xl font-bold text-gw-green mt-1">
+                {data.emissions.annualized_tco2e.toFixed(4)}
+              </div>
+              <div className="text-xs text-gw-muted mt-0.5">Scope 1+2+3 combined</div>
+            </div>
+          </div>
+        )}
+
+        {/* Emissions breakdown */}
+        {data && (
+          <div className="mb-6 bg-gw-dark border border-gw-border rounded-lg p-4">
+            <div className="text-xs font-semibold text-gw-muted uppercase tracking-wide mb-3">
+              YTD Emissions Breakdown (kgCO₂e)
+            </div>
+            <div className="space-y-2">
+              {[
+                { label: 'Scope 1 — Direct Fuel (manual entry)', value: data.emissions.scope1_kgco2e, color: 'bg-orange-500' },
+                { label: 'Scope 2 — Purchased Electricity (WORM ledger)', value: data.emissions.scope2_kgco2e, color: 'bg-blue-500' },
+                { label: 'Scope 3 Cat.11 — AWS Cloud Compute (CE sync)', value: data.emissions.scope3_cat11_kgco2e, color: 'bg-purple-500' },
+              ].map(row => {
+                const total = data.emissions.scope1_kgco2e + data.emissions.scope2_kgco2e + data.emissions.scope3_cat11_kgco2e
+                const pct   = total > 0 ? (row.value / total) * 100 : 0
+                return (
+                  <div key={row.label}>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-gw-muted">{row.label}</span>
+                      <span className="text-white font-mono">{row.value.toFixed(4)} kg</span>
+                    </div>
+                    <div className="h-1.5 bg-gw-border/40 rounded-full">
+                      <div className={`h-full rounded-full ${row.color}`} style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Projection chart */}
+        <div className="mb-4">
+          <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+            <div className="text-xs font-semibold text-gw-muted uppercase tracking-wide">
+              2026–2030 Liability Projection
+            </div>
+            {data?.sbti_projection && (
+              <div className="flex items-center gap-1 bg-gw-dark border border-gw-border rounded-lg p-0.5">
+                <button onClick={() => setView('flat')}
+                  className={`text-xs px-2.5 py-1 rounded transition-colors ${view === 'flat' ? 'bg-gw-green/20 text-gw-green' : 'text-gw-muted'}`}>
+                  Flat Emissions
+                </button>
+                <button onClick={() => setView('sbti')}
+                  className={`text-xs px-2.5 py-1 rounded transition-colors ${view === 'sbti' ? 'bg-gw-green/20 text-gw-green' : 'text-gw-muted'}`}>
+                  SBTi Path
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            {proj.map(p => (
+              <div key={p.year} className="flex items-center gap-3">
+                <div className="text-xs font-mono text-gw-muted w-10 flex-shrink-0">{p.year}</div>
+                <div className="flex-1 h-6 bg-gw-dark border border-gw-border/50 rounded relative overflow-hidden">
+                  <div
+                    className={`h-full rounded transition-all ${
+                      view === 'sbti' ? 'bg-gw-green/40' : 'bg-yellow-500/40'
+                    }`}
+                    style={{ width: `${(p.liability_cad / maxLiability) * 100}%` }}
+                  />
+                  <span className="absolute inset-0 flex items-center pl-2 text-xs text-white font-mono">
+                    ${p.liability_cad.toFixed(2)} CAD
+                  </span>
+                </div>
+                <div className="text-xs text-gw-muted w-20 flex-shrink-0 text-right">
+                  {p.tco2e.toFixed(4)} tCO₂e
+                </div>
+                <div className="text-xs text-gw-muted w-16 flex-shrink-0 text-right">
+                  ${p.price_cad}/t
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {data?.sbti_savings_2030_cad && view === 'sbti' && (
+            <div className="mt-3 bg-gw-green/10 border border-gw-green/30 rounded-lg px-4 py-2.5 text-sm">
+              <span className="text-gw-green font-medium">
+                SBTi reduction saves ${data.sbti_savings_2030_cad.toFixed(2)} CAD
+              </span>
+              <span className="text-gw-muted ml-2">in 2030 carbon tax exposure vs flat-emissions scenario</span>
+            </div>
+          )}
+        </div>
+
+        {/* Statutory price schedule */}
+        <div>
+          <div className="text-xs font-semibold text-gw-muted uppercase tracking-wide mb-2">
+            Statutory Price Schedule (GGPPA)
+          </div>
+          <div className="flex gap-1 flex-wrap">
+            {CARBON_PRICE_SCHEDULE.map(s => (
+              <div key={s.year}
+                className={`text-xs px-2.5 py-1.5 rounded border ${
+                  s.year === year
+                    ? 'border-gw-green bg-gw-green/10 text-gw-green font-bold'
+                    : 'border-gw-border text-gw-muted'
+                }`}>
+                {s.year}: ${s.price}
+              </div>
+            ))}
+          </div>
+          <p className="text-xs text-gw-muted/70 mt-2">
+            Canada Greenhouse Gas Pollution Pricing Act (S.C. 2018, c.12, s.186).
+            Price increases $15/tCO₂e per year. Data centres pay through electricity rates (Scope 2)
+            and directly on fuel combustion (Scope 1 — diesel generators, natural gas).
+          </p>
+        </div>
+
+        {loading && !data && (
+          <div className="text-center py-8 text-gw-muted text-sm">Loading carbon tax data...</div>
+        )}
+      </section>
     </div>
   )
 }
