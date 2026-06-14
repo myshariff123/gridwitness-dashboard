@@ -11,7 +11,7 @@ import {
   Settings as SettingsIcon, Save, Cloud, Bell, Code,
   AlertCircle, ExternalLink, Copy, Loader, Shield, Zap, CheckCircle,
   Flame, Plus, Target, TrendingUp, AlertTriangle, Lock, TrendingDown, Globe,
-  RefreshCw, BarChart2, Leaf, DollarSign, Archive, Trash2,
+  RefreshCw, BarChart2, Leaf, DollarSign, Archive,
 } from 'lucide-react'
 
 // Cloud is used in SETTINGS_TABS (Integrations tab icon)
