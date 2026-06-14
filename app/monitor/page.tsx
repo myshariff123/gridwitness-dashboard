@@ -7,7 +7,28 @@ import {
   getLiveTelemetry, getLiveGridData,
   type TelemetryRecord, type GridSnapshot,
 } from '@/lib/api'
-import { Activity, Zap, Server, RefreshCw, Target, TrendingUp, AlertTriangle, Search } from 'lucide-react'
+import { Activity, Zap, Server, RefreshCw, Target, TrendingUp, AlertTriangle, Search, Leaf, Wind } from 'lucide-react'
+
+interface EmissionsSummary {
+  scope1_t: number
+  scope2_location_t: number
+  scope2_market_t: number
+  scope3_t: number
+  gross_t: number
+  gross_market_t: number
+  net_t: number
+  recs_mwh_retired: number
+  bill_c59_compliant: boolean
+  offsets_t: number
+  net_zero_ready: boolean
+  recs_reduction_pct: number
+  offsets_reduction_pct: number
+  carbon_tax_gross_cad: number
+  carbon_tax_market_cad: number
+  carbon_tax_net_cad: number
+  carbon_price_cad: number
+  year: number
+}
 
 interface DeviceRow {
   source:   string
@@ -72,6 +93,7 @@ export default function MonitorPage() {
   const [rawRecords, setRawRecords] = useState<TelemetryRecord[]>([])
   const [totalInLedger, setTotalInLedger] = useState<number | null>(null)
   const [budget, setBudget]         = useState<BudgetStatus | null>(null)
+  const [emSummary, setEmSummary]   = useState<EmissionsSummary | null>(null)
   const [deviceSearch, setDeviceSearch] = useState('')
 
   useEffect(() => {
@@ -123,6 +145,13 @@ export default function MonitorPage() {
         const br = await fetch(`${API_BASE}/api/tenants/${tenantId}/budget`)
         setBudget(br.ok ? await br.json() : null)
       } catch { setBudget(null) }
+
+      // Verified emissions summary (market-based + net)
+      try {
+        const year = new Date().getFullYear()
+        const er = await fetch(`${API_BASE}/api/tenants/${tenantId}/emissions-summary?year=${year}`)
+        setEmSummary(er.ok ? await er.json() : null)
+      } catch { setEmSummary(null) }
 
       setLastUpdate(new Date())
       setErr(anyError ? 'One or more data sources returned no data' : null)
@@ -267,6 +296,75 @@ export default function MonitorPage() {
             </div>
           )
         })()}
+
+        {/* ── Verified Emissions Strip ── */}
+        {emSummary && (
+          <div className="bg-gw-panel border border-gw-border rounded-xl p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold text-white flex items-center gap-2">
+                <Leaf className="w-4 h-4 text-gw-green" />
+                Verified Emissions  ·  {emSummary.year}
+                <span className="text-xs text-gw-muted font-normal">GHG Protocol · Market-Based Scope 2</span>
+              </h2>
+              <div className="flex items-center gap-2">
+                {emSummary.bill_c59_compliant && (
+                  <span className="text-xs text-gw-green border border-gw-green/30 px-2 py-0.5 rounded">Bill C-59 ✓</span>
+                )}
+                {emSummary.net_zero_ready && (
+                  <span className="text-xs text-emerald-400 border border-emerald-400/30 px-2 py-0.5 rounded flex items-center gap-1">
+                    <Wind className="w-3 h-3" /> Net-Zero Ready
+                  </span>
+                )}
+                <a href={`/settings?tab=recs&tenant_id=${tenantId}`}
+                  className="text-xs text-gw-muted hover:text-gw-green border border-gw-border px-2 py-0.5 rounded transition-colors">
+                  Manage RECs &amp; Offsets
+                </a>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-gw-dark rounded-lg p-3">
+                <div className="text-xs text-gw-muted mb-1">Gross (Location)</div>
+                <div className="text-lg font-bold text-white font-mono">{emSummary.gross_t.toFixed(2)}</div>
+                <div className="text-xs text-gw-muted">tCO₂e · S1+S2+S3</div>
+              </div>
+              <div className="bg-gw-dark rounded-lg p-3">
+                <div className="text-xs text-gw-muted mb-1">Market-Based
+                  {emSummary.recs_mwh_retired > 0 && (
+                    <span className="ml-1 text-gw-green">−{emSummary.recs_reduction_pct}%</span>
+                  )}
+                </div>
+                <div className="text-lg font-bold text-gw-green font-mono">{emSummary.gross_market_t.toFixed(2)}</div>
+                <div className="text-xs text-gw-muted">
+                  {emSummary.recs_mwh_retired > 0
+                    ? `${emSummary.recs_mwh_retired.toFixed(1)} MWh RECs retired`
+                    : 'tCO₂e · after RECs'}
+                </div>
+              </div>
+              <div className="bg-gw-dark rounded-lg p-3">
+                <div className="text-xs text-gw-muted mb-1">Net Position
+                  {emSummary.offsets_t > 0 && (
+                    <span className="ml-1 text-emerald-400">−{emSummary.offsets_reduction_pct}%</span>
+                  )}
+                </div>
+                <div className={`text-lg font-bold font-mono ${emSummary.net_zero_ready ? 'text-emerald-400' : 'text-amber-400'}`}>
+                  {emSummary.net_t.toFixed(2)}
+                </div>
+                <div className="text-xs text-gw-muted">
+                  {emSummary.offsets_t > 0
+                    ? `${emSummary.offsets_t.toFixed(2)} tCO₂e offsets`
+                    : 'tCO₂e · after offsets'}
+                </div>
+              </div>
+              <div className="bg-gw-dark rounded-lg p-3">
+                <div className="text-xs text-gw-muted mb-1">Carbon Liability (Net)</div>
+                <div className="text-lg font-bold text-amber-400 font-mono">
+                  ${emSummary.carbon_tax_net_cad.toLocaleString('en-CA', { maximumFractionDigits: 0 })}
+                </div>
+                <div className="text-xs text-gw-muted">${emSummary.carbon_price_cad}/tCO₂e federal price</div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Carbon Trend ── */}
         <CarbonTrendSparkline records={rawRecords} bucketMinutes={60} buckets={24} />

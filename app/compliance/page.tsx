@@ -41,6 +41,10 @@ export default function CompliancePage() {
     setTenantId(url.get('tenant_id') ||
                 window.localStorage.getItem('gw_tenant_id') ||
                 'GW-NIMBL-AEB47A92')
+    // Store prefill params for BoardAttestationSection
+    if (url.get('report_type')) {
+      window.sessionStorage.setItem('gw_attest_prefill_type', url.get('report_type') || '')
+    }
   }, [])
 
   // Load latest report on mount
@@ -329,6 +333,16 @@ function BoardAttestationSection({ tenantId }: { tenantId: string }) {
     attester_email: '', attester_name: '', attester_title: '',
     report_type: 'OSFI B-15', report_id: '', summary: '',
   })
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const prefill = window.sessionStorage.getItem('gw_attest_prefill_type')
+    if (prefill) {
+      setForm(f => ({ ...f, report_type: prefill }))
+      setShowForm(true)
+      window.sessionStorage.removeItem('gw_attest_prefill_type')
+    }
+  }, [])
 
   const REPORT_TYPES = ['OSFI B-15','TCFD','IFRS S2','GHG Protocol','ISO 14064','Annual ESG']
 

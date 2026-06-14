@@ -356,6 +356,11 @@ export default function TcfdPage() {
               className="text-xs text-green-400 underline hover:text-green-300">
               Download PDF
             </a>
+            <span className="text-gw-muted text-xs">·</span>
+            <a href={`/compliance?tab=attestation&tenant_id=${tenantId}&report_type=TCFD`}
+              className="text-xs text-amber-400 underline hover:text-amber-300 flex items-center gap-1">
+              Request Board Attestation →
+            </a>
           </div>
         )}
 

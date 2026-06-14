@@ -334,6 +334,11 @@ export default function IfrsS2Page() {
             <span className="text-xs text-blue-300">Report generated — </span>
             <a href={reportUrl} target="_blank" rel="noreferrer"
               className="text-xs text-blue-400 underline hover:text-blue-300">Download PDF</a>
+            <span className="text-gray-600 text-xs">·</span>
+            <a href={`/compliance?tab=attestation&tenant_id=${tenantId}&report_type=IFRS+S2`}
+              className="text-xs text-amber-400 underline hover:text-amber-300 flex items-center gap-1">
+              Request Board Attestation →
+            </a>
           </div>
         )}
 
