@@ -49,6 +49,8 @@ Browser → Next.js 14 (App Router) on EC2 + nginx + PM2
 | `gw-api-keys-staging` | KeyHash | — | SHA-256 hashed API keys |
 | `gw-scope1-staging` | TenantID | RecordedAt | Direct (Scope 1) emission records |
 | `gw-carbon-budget-staging` | TenantID | — | Monthly/quarterly tCO2e budgets |
+| `gw-sbti-staging` | TenantID | — | Science-Based emission reduction targets |
+| `gw-scope3-staging` | TenantID | YearMonth | Scope 3 Cat.11 AWS cloud carbon estimates |
 
 ---
 
@@ -110,6 +112,8 @@ Browser → Next.js 14 (App Router) on EC2 + nginx + PM2
 
 ### Onboarding (`/onboarding`)
 - 3-step wizard: Org info → Deploy agent → Verify connection
+- `gw-ms-tenant-provisioning-staging` Lambda: creates Cognito user, DynamoDB tenant record, and hashed API key atomically
+- Temp password emailed to org admin via Cognito; user logs in immediately after provisioning
 - Deployment instructions: Quick Test (curl), Linux, Docker, AWS EC2, Windows Server
 - Polls telemetry API every 15 s to detect first record from agent
 
@@ -117,24 +121,38 @@ Browser → Next.js 14 (App Router) on EC2 + nginx + PM2
 - `POST /api/tenants/{id}/scope1` — fuel type, quantity, emission factor, kgCO2e
 - Records stored in `gw-scope1-staging`; feeds into Carbon Budget Scope 1 total
 
+### Telemetry Enforcement Mode (`/settings → Enforcement`)
+- Per-tenant flag `EnforcementMode` in `gw-tenants-staging`
+- **Audit mode** (default): invalid API keys logged as WARNING, records still processed
+- **Enforcement mode**: records with invalid/missing API keys silently discarded; `ENFORCEMENT_REJECT` logged
+- Toggle via `GET/PUT /api/tenants/{tenantId}/enforcement` → `gw-ms-enforcement-staging` Lambda
+- Oracle Lambda (`gw-ms-telemetry-oracle-staging`) checks flag per-message
+
+### Science-Based Targets + Decarbonisation Roadmap (`/settings → SBTi Targets`)
+- Per-tenant SBTi targets stored in `gw-sbti-staging` DynamoDB table
+- Supports 1.5°C pathway (4.2%/yr), Well-Below 2°C (2.5%/yr), and custom rates
+- Lambda calculates full trajectory from base year to target year
+- Trajectory visualization: year-by-year progress bars showing tCO2e vs baseline
+- `GET/PUT /api/tenants/{tenantId}/sbti` → `gw-ms-sbti-staging` Lambda
+
+### Scope 3 AWS Cloud Emissions (`/settings → Scope 3 Cloud`)
+- Estimates Scope 3 Category 11 cloud emissions from AWS compute spend
+- Uses AWS Cost Explorer `GetCostAndUsage` grouped by region and service
+- Applies `$0.50/kWh` cost-to-energy factor + regional grid intensity (EPA eGRID + IEA 2024)
+- Covers: EC2, Lambda, ECS, EKS, Fargate
+- Results cached in `gw-scope3-staging` (PK: TenantID, SK: YearMonth)
+- Supports cross-account role assumption for multi-account tenants
+- `GET /api/tenants/{tenantId}/scope3`, `POST /api/tenants/{tenantId}/scope3/sync` → `gw-ms-scope3-staging` Lambda
+- **Requires:** AWS Cost Explorer enabled in account (one-time setup)
+
 ---
 
 ## Under Development 🔨
 
-### Onboarding → Cognito End-to-End
-**Goal:** Self-serve signup creates Cognito user + tenant DynamoDB record + API key in one flow; user gets temp password email and can log in immediately.
-
-- ✅ Onboarding 3-step UI
-- ✅ `gw-ms-tenant-provisioning-staging` Lambda (writes tenant to DynamoDB)
-- ⏳ Lambda doesn't yet create Cognito user or generate API key
-- ⏳ Onboarding page generates tenant ID client-side instead of calling the Lambda
-
-### UI/UX Enterprise Redesign
-**Goal:** Settings with tabbed navigation (one section visible at a time), Monitor page with better data hierarchy, Nav with clearer active states and icons.
-
-- ⏳ Settings tab nav (General | Agent | Integrations | API Keys | Carbon Budget | Team)
-- ⏳ Monitor layout reorder (grid intensity in KPI row, compact regions row)
-- ⏳ Improved Nav with status indicators
+### Cost Explorer Setup (Scope 3 prerequisite)
+To enable Scope 3 AWS Cloud syncs, activate Cost Explorer once per AWS account:
+**AWS Console → Billing & Cost Management → Cost Explorer → Enable Cost Explorer**
+Data becomes available approximately 24 hours after activation.
 
 ---
 
@@ -142,11 +160,10 @@ Browser → Next.js 14 (App Router) on EC2 + nginx + PM2
 
 | Feature | Priority | Notes |
 |---|---|---|
-| Science-Based Targets + Decarbonisation Roadmap | High | Reduction trajectory vs SBTi benchmarks |
-| Scope 3 AWS Cloud (Cost Explorer API) | High | Cloud carbon via same-account Cost Explorer |
-| Telemetry enforcement mode | Medium | Per-tenant flag to reject invalid API keys |
 | Multi-Entity Org Hierarchy + RBAC | Medium | Cognito Groups, parent/child tenants |
 | Peer Benchmarking | Medium | Needs industry benchmark dataset |
+| Scope 3 Cat. 4 (Supplier Emissions) | Medium | Supplier carbon reporting intake form |
+| Net-Zero Dashboard view | Medium | Consolidated Scope 1+2+3 vs targets |
 | AWS Marketplace listing | Low | Waiting on AWS approval |
 
 ---
@@ -199,6 +216,9 @@ git pull origin main && npm run build && pm2 restart gridwitness-dashboard
 | `gw-ms-api-keys-staging` | API GW | API key CRUD (hash-keyed) |
 | `gw-ms-scope1-staging` | API GW | Scope 1 manual entry |
 | `gw-ms-anomaly-detector-staging` | Schedule | Grid incident auto-generation |
+| `gw-ms-enforcement-staging` | API GW GET/PUT | Per-tenant enforcement mode toggle |
+| `gw-ms-sbti-staging` | API GW GET/PUT | SBTi target + trajectory calculation |
+| `gw-ms-scope3-staging` | API GW GET/POST | Scope 3 Cat.11 AWS cloud carbon sync |
 
 ---
 

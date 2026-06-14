@@ -2266,6 +2266,10 @@ function Scope3Section({ tenantId }: { tenantId: string }) {
         body: JSON.stringify({ year_month: yearMonth }),
       })
       const d = await r.json()
+      if (d.setup_required) {
+        setToast({ type: 'info', text: d.error + ' ' + d.instructions })
+        return
+      }
       if (!r.ok) throw new Error(d.error || 'Sync failed')
       setData(d)
       setToast({ type: 'success', text: `Synced ${yearMonth}: ${d.total_tco2e} tCO2e from AWS` })
