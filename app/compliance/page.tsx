@@ -6,7 +6,7 @@ import { useEffect, useState, useCallback } from 'react'
 import Nav from '@/components/Nav'
 import {
   FileText, Loader, CheckCircle, AlertCircle,
-  Download, RefreshCw, Shield, Calendar,
+  Download, RefreshCw, Shield, Calendar, Lock, Send,
 } from 'lucide-react'
 import {
   generateReport, getLatestReport,
@@ -286,6 +286,9 @@ export default function CompliancePage() {
           </section>
         )}
 
+        {/* Board Attestation */}
+        <BoardAttestationSection tenantId={tenantId} />
+
         {/* Help */}
         <section className="bg-gw-panel border border-gw-border rounded-xl p-5 text-sm text-gw-muted">
           <h3 className="text-white font-semibold mb-2">About the Report</h3>
@@ -293,12 +296,232 @@ export default function CompliancePage() {
             <li>• Every telemetry record is SHA-256 hashed and linked in an immutable Merkle chain</li>
             <li>• The full chain root appears on the cover page — verifiable at <a href="/verify" className="text-gw-green hover:underline">/verify</a></li>
             <li>• PDFs are stored in AWS S3 with Object Lock COMPLIANCE for 7 years (OSFI B-15 Sec.5.3)</li>
+            <li>• Board attestation seal (SHA-256) is stored separately under Object Lock COMPLIANCE</li>
             <li>• Data residency: AWS ca-central-1 (Montreal) — Canadian sovereign region</li>
             <li>• Encryption: AES-256 at rest, TLS 1.3 in transit</li>
           </ul>
         </section>
       </div>
     </div>
+  )
+}
+
+// ── Board Attestation Section ─────────────────────────────────────────────────
+interface AttestRecord {
+  AttestationID: string; ReportType: string; ReportID?: string
+  AttesterName: string; AttesterEmail: string; AttesterTitle?: string
+  Status: string; RequestedAt: string; SealHash?: string; AttestationLink?: string
+}
+
+function BoardAttestationSection({ tenantId }: { tenantId: string }) {
+  const [list, setList]           = useState<AttestRecord[]>([])
+  const [loading, setLoading]     = useState(true)
+  const [showForm, setShowForm]   = useState(false)
+  const [result, setResult]       = useState<{ link: string; id: string; emailSent: boolean } | null>(null)
+  const [copied, setCopied]       = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [err, setErr]             = useState('')
+
+  const [form, setForm] = useState({
+    attester_email: '', attester_name: '', attester_title: '',
+    report_type: 'OSFI B-15', report_id: '', summary: '',
+  })
+
+  const REPORT_TYPES = ['OSFI B-15','TCFD','IFRS S2','GHG Protocol','ISO 14064','Annual ESG']
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/attestations`)
+      if (r.ok) { const d = await r.json(); setList(d.attestations || []) }
+    } catch {}
+    finally { setLoading(false) }
+  }, [tenantId])
+
+  useEffect(() => { load() }, [load])
+
+  async function request(e: React.FormEvent) {
+    e.preventDefault()
+    if (!form.attester_email) { setErr('Attester email required'); return }
+    setSubmitting(true); setErr('')
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/attestations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(form),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
+      setResult({ link: d.attestation_link, id: d.attestation_id, emailSent: d.email_sent })
+      setForm({ attester_email: '', attester_name: '', attester_title: '', report_type: 'OSFI B-15', report_id: '', summary: '' })
+      load()
+    } catch (ex) { setErr(ex instanceof Error ? ex.message : 'Request failed') }
+    finally { setSubmitting(false) }
+  }
+
+  function copyLink(link: string) {
+    navigator.clipboard.writeText(link).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000) })
+  }
+
+  return (
+    <section className="bg-gw-panel border border-gw-border rounded-xl p-6 space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-white font-semibold flex items-center gap-2">
+            <Lock className="w-4 h-4 text-gw-green" />
+            Board Attestation
+          </h2>
+          <p className="text-sm text-gw-muted mt-1">
+            OSFI B-15 §5.3 governance sign-off. Board member clicks a link → cryptographic SHA-256 seal stored in the compliance vault.
+          </p>
+        </div>
+        <button onClick={() => { setShowForm(s => !s); setResult(null); setErr('') }}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-gw-green text-gw-dark rounded text-sm font-medium hover:bg-gw-green/90">
+          <Send className="w-3.5 h-3.5" /> Request Attestation
+        </button>
+      </div>
+
+      {/* Request form */}
+      {showForm && !result && (
+        <form onSubmit={request} className="bg-gw-dark border border-gw-border rounded-lg p-4 space-y-3">
+          <div className="text-sm font-medium text-white mb-2">New Attestation Request</div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gw-muted block mb-1">Attester Email *</label>
+              <input type="email" required value={form.attester_email}
+                onChange={e => setForm(f => ({ ...f, attester_email: e.target.value }))}
+                placeholder="board.member@company.com"
+                className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none" />
+            </div>
+            <div>
+              <label className="text-xs text-gw-muted block mb-1">Name</label>
+              <input type="text" value={form.attester_name}
+                onChange={e => setForm(f => ({ ...f, attester_name: e.target.value }))}
+                placeholder="Full name"
+                className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-gw-muted block mb-1">Title</label>
+              <input type="text" value={form.attester_title}
+                onChange={e => setForm(f => ({ ...f, attester_title: e.target.value }))}
+                placeholder="e.g. Chair, Audit Committee"
+                className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none" />
+            </div>
+            <div>
+              <label className="text-xs text-gw-muted block mb-1">Report Type</label>
+              <select value={form.report_type} onChange={e => setForm(f => ({ ...f, report_type: e.target.value }))}
+                className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none">
+                {REPORT_TYPES.map(t => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-gw-muted block mb-1">Report ID (optional)</label>
+            <input type="text" value={form.report_id}
+              onChange={e => setForm(f => ({ ...f, report_id: e.target.value }))}
+              placeholder="e.g. RPT-OSFI-2025-001"
+              className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none" />
+          </div>
+          <div>
+            <label className="text-xs text-gw-muted block mb-1">Summary (shown to attester)</label>
+            <textarea rows={2} value={form.summary}
+              onChange={e => setForm(f => ({ ...f, summary: e.target.value }))}
+              placeholder="Brief description of what is being attested to…"
+              className="w-full bg-gw-panel border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none resize-none" />
+          </div>
+          {err && <p className="text-xs text-red-400">{err}</p>}
+          <div className="flex gap-2 pt-1">
+            <button type="submit" disabled={submitting}
+              className="flex items-center gap-1.5 px-4 py-1.5 bg-gw-green text-gw-dark rounded text-sm font-medium disabled:opacity-50">
+              {submitting ? <><Loader className="w-3.5 h-3.5 animate-spin" /> Sending…</> : <><Send className="w-3.5 h-3.5" /> Send Request</>}
+            </button>
+            <button type="button" onClick={() => setShowForm(false)}
+              className="px-4 py-1.5 border border-gw-border text-gw-muted rounded text-sm hover:text-white">
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* Success */}
+      {result && (
+        <div className="bg-gw-green/10 border border-gw-green/30 rounded-lg p-4 space-y-2">
+          <div className="flex items-center gap-2 text-gw-green font-medium text-sm">
+            <CheckCircle className="w-4 h-4" />
+            Attestation request created
+            {result.emailSent ? ' — email sent' : ' — email not configured, share link manually'}
+          </div>
+          <div className="text-xs text-gw-muted">ID: <span className="font-mono text-white">{result.id}</span></div>
+          <div className="flex items-center gap-2 bg-gw-dark border border-gw-border rounded px-3 py-2">
+            <span className="text-xs font-mono text-gw-muted flex-1 truncate">{result.link}</span>
+            <button onClick={() => copyLink(result.link)}
+              className="text-xs text-gw-green hover:underline flex-shrink-0">
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+          <button onClick={() => { setResult(null); setShowForm(false) }}
+            className="text-xs text-gw-muted hover:text-white">
+            Done
+          </button>
+        </div>
+      )}
+
+      {/* Past attestations */}
+      {loading ? (
+        <div className="text-sm text-gw-muted">Loading…</div>
+      ) : list.length === 0 ? (
+        <div className="text-sm text-gw-muted py-4 text-center border border-dashed border-gw-border rounded-lg">
+          No attestations yet. Request the first board sign-off above.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="border-b border-gw-border">
+              <tr className="text-gw-muted text-left">
+                <th className="py-2 pr-3 font-medium">ID</th>
+                <th className="py-2 pr-3 font-medium">Report</th>
+                <th className="py-2 pr-3 font-medium">Attester</th>
+                <th className="py-2 pr-3 font-medium">Requested</th>
+                <th className="py-2 pr-3 font-medium">Status</th>
+                <th className="py-2 font-medium">Seal Hash</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gw-border/40">
+              {list.map(a => (
+                <tr key={a.AttestationID} className="hover:bg-gw-dark/40">
+                  <td className="py-2 pr-3 font-mono text-gw-muted">{a.AttestationID}</td>
+                  <td className="py-2 pr-3 text-white">{a.ReportType}</td>
+                  <td className="py-2 pr-3">
+                    <div className="text-white">{a.AttesterName || a.AttesterEmail}</div>
+                    {a.AttesterTitle && <div className="text-gw-muted">{a.AttesterTitle}</div>}
+                  </td>
+                  <td className="py-2 pr-3 text-gw-muted">{new Date(a.RequestedAt).toLocaleDateString('en-CA')}</td>
+                  <td className="py-2 pr-3">
+                    <span className={`px-1.5 py-0.5 rounded text-xs border ${
+                      a.Status === 'SEALED'
+                        ? 'bg-gw-green/10 border-gw-green/30 text-gw-green'
+                        : 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400'
+                    }`}>{a.Status}</span>
+                  </td>
+                  <td className="py-2">
+                    {a.SealHash ? (
+                      <span className="font-mono text-gw-green text-xs">{a.SealHash.slice(0,16)}…</span>
+                    ) : a.AttestationLink ? (
+                      <button onClick={() => copyLink(a.AttestationLink!)}
+                        className="text-xs text-gw-muted hover:text-gw-green underline">
+                        Copy link
+                      </button>
+                    ) : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   )
 }
 

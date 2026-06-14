@@ -11,7 +11,7 @@ import {
   Settings as SettingsIcon, Save, Cloud, Bell, Code,
   AlertCircle, ExternalLink, Copy, Loader, Shield, Zap, CheckCircle,
   Flame, Plus, Target, TrendingUp, AlertTriangle, Lock, TrendingDown, Globe,
-  RefreshCw, BarChart2, Leaf, DollarSign,
+  RefreshCw, BarChart2, Leaf, DollarSign, Archive, Trash2,
 } from 'lucide-react'
 
 // Cloud is used in SETTINGS_TABS (Integrations tab icon)
@@ -34,6 +34,8 @@ const SETTINGS_TABS = [
   { id: 'scope3',       label: 'Scope 3 Cloud',   icon: Globe        },
   { id: 'enforcement',  label: 'Enforcement',     icon: Lock         },
   { id: 'carbontax',   label: 'Carbon Tax',      icon: DollarSign   },
+  { id: 'recs',         label: 'RECs & PPAs',     icon: Leaf         },
+  { id: 'offsets',      label: 'Carbon Offsets',  icon: Archive      },
   { id: 'team',         label: 'Team',            icon: Bell         },
 ] as const
 type SettingsTab = typeof SETTINGS_TABS[number]['id']
@@ -164,6 +166,14 @@ export default function SettingsPage() {
 
           {activeTab === 'carbontax' && <>
             <CarbonTaxSection tenantId={tenantId} />
+          </>}
+
+          {activeTab === 'recs' && <>
+            <RECsSection tenantId={tenantId} />
+          </>}
+
+          {activeTab === 'offsets' && <>
+            <OffsetsSection tenantId={tenantId} />
           </>}
 
           {activeTab === 'team' && <>
@@ -2657,5 +2667,610 @@ function CarbonTaxSection({ tenantId }: { tenantId: string }) {
         )}
       </section>
     </div>
+  )
+}
+
+// ── RECs & PPAs Section ────────────────────────────────────────────────────────
+interface REC {
+  RECID: string; Type: string; Provider: string; CertifiedBy: string
+  MWh: number; VintageYear: number; FuelType: string; Province: string
+  Status: string; CertificateNo?: string; Notes?: string; CreatedAt?: string
+}
+interface Scope2Data {
+  location_based_tco2?: number; market_based_tco2?: number
+  retired_recs_count?: number; retired_recs_mwh?: number
+  reduction_pct?: number; bill_c59_compliant?: boolean; year?: number
+}
+
+const REC_TYPES   = ['REC','PPA','VPPA','BUNDLED_REC','UNBUNDLED_REC','GREEN_TARIFF']
+const FUEL_TYPES  = ['solar','wind','hydro','geothermal','biomass','tidal']
+const CERT_BODIES = ['EcoLogo','Green-e','I-REC','TIGR','RE100','IREC']
+const PROVINCES   = ['AB','BC','ON','QC','SK','MB','NS','NB','NL','PE','NT','YT','NU']
+
+function RECsSection({ tenantId }: { tenantId: string }) {
+  const [recs, setRecs]           = useState<REC[]>([])
+  const [scope2, setScope2]       = useState<Scope2Data | null>(null)
+  const [loading, setLoading]     = useState(true)
+  const [showModal, setShowModal] = useState(false)
+  const [retiring, setRetiring]   = useState<string | null>(null)
+  const [toast, setToast]         = useState<string>('')
+  const year = new Date().getFullYear()
+
+  const [form, setForm] = useState({
+    type: 'REC', provider: '', certificate_no: '', certified_by: 'EcoLogo',
+    mwh: '', vintage_year: String(year - 1), fuel_type: 'wind',
+    province: 'AB', country: 'CA', price_per_mwh: '', notes: '',
+  })
+  const [saving, setSaving] = useState(false)
+  const [formErr, setFormErr] = useState('')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [r1, r2] = await Promise.all([
+        fetch(`${API_BASE}/api/tenants/${tenantId}/recs`),
+        fetch(`${API_BASE}/api/tenants/${tenantId}/recs/scope2?year=${year}`),
+      ])
+      if (r1.ok) { const d = await r1.json(); setRecs(d.recs || []) }
+      if (r2.ok) setScope2(await r2.json())
+    } catch {}
+    finally { setLoading(false) }
+  }, [tenantId, year])
+
+  useEffect(() => { load() }, [load])
+
+  async function addRec(e: React.FormEvent) {
+    e.preventDefault()
+    if (!form.mwh || parseFloat(form.mwh) <= 0) { setFormErr('MWh must be > 0'); return }
+    setSaving(true); setFormErr('')
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/recs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...form, mwh: parseFloat(form.mwh), vintage_year: parseInt(form.vintage_year) }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
+      setShowModal(false)
+      setForm({ type: 'REC', provider: '', certificate_no: '', certified_by: 'EcoLogo',
+        mwh: '', vintage_year: String(year - 1), fuel_type: 'wind', province: 'AB', country: 'CA', price_per_mwh: '', notes: '' })
+      showToast(`REC added (${d.rec_id})`)
+      load()
+    } catch (ex) { setFormErr(ex instanceof Error ? ex.message : 'Save failed') }
+    finally { setSaving(false) }
+  }
+
+  async function retire(recId: string) {
+    setRetiring(recId)
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/recs/${recId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'RETIRED', retired_for: year }),
+      })
+      if (r.ok) { showToast(`REC ${recId} retired for ${year}`); load() }
+    } catch {}
+    finally { setRetiring(null) }
+  }
+
+  function showToast(msg: string) { setToast(msg); setTimeout(() => setToast(''), 3000) }
+
+  const c59Color = scope2?.bill_c59_compliant ? 'text-gw-green' : 'text-amber-400'
+
+  return (
+    <section className="bg-gw-panel border border-gw-border rounded-xl p-6 space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="font-semibold text-white flex items-center gap-2">
+            <Leaf className="w-4 h-4 text-gw-green" />
+            RECs &amp; PPAs
+          </h2>
+          <p className="text-sm text-gw-muted mt-1">
+            Market-based Scope 2 methodology. Certified RECs required for Bill C-59 net-zero claims.
+          </p>
+        </div>
+        <button onClick={() => setShowModal(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-gw-green text-gw-dark rounded text-sm font-medium hover:bg-gw-green/90">
+          <Plus className="w-3.5 h-3.5" /> Add REC
+        </button>
+      </div>
+
+      {toast && (
+        <div className="bg-gw-green/10 border border-gw-green/30 rounded px-3 py-2 text-xs text-gw-green">{toast}</div>
+      )}
+
+      {/* Market-based Scope 2 summary */}
+      {scope2 && (
+        <div className="bg-gw-dark border border-gw-border rounded-lg p-4">
+          <div className="text-xs font-semibold text-gw-muted uppercase tracking-wide mb-3">
+            Market-Based Scope 2 · {scope2.year}
+          </div>
+          <div className="grid grid-cols-3 gap-3 mb-3">
+            {[
+              ['Location-Based', `${scope2.location_based_tco2?.toFixed(3) ?? '—'} tCO₂e`, 'text-amber-400'],
+              ['Market-Based',   `${scope2.market_based_tco2?.toFixed(3)  ?? '—'} tCO₂e`, 'text-gw-green'],
+              ['Reduction',      `${scope2.reduction_pct ?? 0}%`,                          'text-blue-400'],
+            ].map(([label, val, cls]) => (
+              <div key={label} className="bg-gw-panel border border-gw-border/50 rounded p-2.5 text-center">
+                <div className="text-xs text-gw-muted mb-1">{label}</div>
+                <div className={`text-sm font-mono font-bold ${cls}`}>{val}</div>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <span className={`font-medium ${c59Color}`}>
+              Bill C-59: {scope2.bill_c59_compliant ? 'COMPLIANT' : 'NOT COMPLIANT'}
+            </span>
+            <span className="text-gw-muted">·</span>
+            <span className="text-gw-muted">{scope2.retired_recs_count ?? 0} RECs retired · {scope2.retired_recs_mwh?.toFixed(1) ?? 0} MWh</span>
+          </div>
+        </div>
+      )}
+
+      {/* REC table */}
+      {loading ? (
+        <div className="text-sm text-gw-muted py-4">Loading…</div>
+      ) : recs.length === 0 ? (
+        <div className="text-sm text-gw-muted py-6 text-center border border-dashed border-gw-border rounded-lg">
+          No RECs yet. Add your first renewable energy certificate above.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="border-b border-gw-border">
+              <tr className="text-gw-muted text-left">
+                <th className="py-2 pr-3 font-medium">ID</th>
+                <th className="py-2 pr-3 font-medium">Type</th>
+                <th className="py-2 pr-3 font-medium">Provider</th>
+                <th className="py-2 pr-3 font-medium">MWh</th>
+                <th className="py-2 pr-3 font-medium">Certified By</th>
+                <th className="py-2 pr-3 font-medium">Vintage</th>
+                <th className="py-2 pr-3 font-medium">Status</th>
+                <th className="py-2 font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gw-border/40">
+              {recs.map(r => (
+                <tr key={r.RECID} className="hover:bg-gw-dark/40">
+                  <td className="py-2 pr-3 font-mono text-gw-muted">{r.RECID}</td>
+                  <td className="py-2 pr-3 text-white">{r.Type}</td>
+                  <td className="py-2 pr-3 text-white">{r.Provider || '—'}</td>
+                  <td className="py-2 pr-3 font-mono text-gw-green">{Number(r.MWh).toFixed(1)}</td>
+                  <td className="py-2 pr-3">
+                    <span className={`px-1.5 py-0.5 rounded text-xs border ${
+                      CERT_BODIES.includes(r.CertifiedBy)
+                        ? 'bg-gw-green/10 border-gw-green/30 text-gw-green'
+                        : 'bg-gw-dark border-gw-border text-gw-muted'
+                    }`}>{r.CertifiedBy || '—'}</span>
+                  </td>
+                  <td className="py-2 pr-3 text-gw-muted">{r.VintageYear}</td>
+                  <td className="py-2 pr-3">
+                    <span className={`px-1.5 py-0.5 rounded text-xs border ${
+                      r.Status === 'RETIRED'
+                        ? 'bg-gw-muted/10 border-gw-border text-gw-muted'
+                        : 'bg-blue-500/10 border-blue-500/30 text-blue-400'
+                    }`}>{r.Status}</span>
+                  </td>
+                  <td className="py-2">
+                    {r.Status === 'ACTIVE' && (
+                      <button onClick={() => retire(r.RECID)} disabled={retiring === r.RECID}
+                        className="text-xs text-amber-400 hover:text-amber-300 disabled:opacity-50">
+                        {retiring === r.RECID ? '…' : 'Retire'}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Add REC modal */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+          <div className="bg-gw-panel border border-gw-border rounded-xl w-full max-w-md">
+            <div className="px-5 py-4 border-b border-gw-border flex items-center justify-between">
+              <h3 className="font-semibold text-white">Add REC / PPA</h3>
+              <button onClick={() => setShowModal(false)} className="text-gw-muted hover:text-white text-xl leading-none">×</button>
+            </div>
+            <form onSubmit={addRec} className="p-5 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-gw-muted block mb-1">Type</label>
+                  <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}
+                    className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none">
+                    {REC_TYPES.map(t => <option key={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gw-muted block mb-1">MWh *</label>
+                  <input type="number" min="0.01" step="0.01" required value={form.mwh}
+                    onChange={e => setForm(f => ({ ...f, mwh: e.target.value }))}
+                    className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none" />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gw-muted block mb-1">Provider</label>
+                <input type="text" value={form.provider}
+                  onChange={e => setForm(f => ({ ...f, provider: e.target.value }))}
+                  placeholder="e.g. Enel Green Power"
+                  className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-gw-muted block mb-1">Certificate No.</label>
+                  <input type="text" value={form.certificate_no}
+                    onChange={e => setForm(f => ({ ...f, certificate_no: e.target.value }))}
+                    className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none" />
+                </div>
+                <div>
+                  <label className="text-xs text-gw-muted block mb-1">Certified By</label>
+                  <select value={form.certified_by} onChange={e => setForm(f => ({ ...f, certified_by: e.target.value }))}
+                    className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none">
+                    {CERT_BODIES.map(b => <option key={b}>{b}</option>)}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-gw-muted block mb-1">Fuel Type</label>
+                  <select value={form.fuel_type} onChange={e => setForm(f => ({ ...f, fuel_type: e.target.value }))}
+                    className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none">
+                    {FUEL_TYPES.map(t => <option key={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gw-muted block mb-1">Vintage Year</label>
+                  <input type="number" min="2010" max="2030" value={form.vintage_year}
+                    onChange={e => setForm(f => ({ ...f, vintage_year: e.target.value }))}
+                    className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-gw-muted block mb-1">Province</label>
+                  <select value={form.province} onChange={e => setForm(f => ({ ...f, province: e.target.value }))}
+                    className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none">
+                    {PROVINCES.map(p => <option key={p}>{p}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gw-muted block mb-1">Price/MWh (CAD)</label>
+                  <input type="number" min="0" step="0.01" value={form.price_per_mwh}
+                    onChange={e => setForm(f => ({ ...f, price_per_mwh: e.target.value }))}
+                    className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-gw-green focus:outline-none" />
+                </div>
+              </div>
+              {formErr && <p className="text-xs text-red-400">{formErr}</p>}
+              <div className="flex gap-2 pt-1">
+                <button type="submit" disabled={saving}
+                  className="flex-1 bg-gw-green text-gw-dark py-2 rounded text-sm font-medium hover:bg-gw-green/90 disabled:opacity-50">
+                  {saving ? 'Saving…' : 'Add REC'}
+                </button>
+                <button type="button" onClick={() => setShowModal(false)}
+                  className="px-4 py-2 border border-gw-border text-gw-muted rounded text-sm hover:text-white">
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      <p className="text-xs text-gw-muted">
+        GHG Protocol Scope 2 Guidance — Market-Based Method. Retiring a certified REC zeros out the corresponding MWh from your Scope 2 location-based total.
+      </p>
+    </section>
+  )
+}
+
+// ── Carbon Offsets Section ────────────────────────────────────────────────────
+interface Offset {
+  OffsetID: string; Registry: string; SerialNo?: string; VintageYear: number
+  QuantityTco2: number; ProjectName?: string; ProjectType?: string
+  Country: string; Status: string; Notes?: string; RetiredFor?: number
+}
+interface NetPos {
+  gross?: { total_tco2?: number; scope1_kg?: number; scope2_kg?: number; scope3_kg?: number }
+  offsets_tco2?: number; net_tco2?: number; reduction_pct?: number; net_zero_ready?: boolean
+  offsets_retired_count?: number; year?: number; by_registry?: Record<string, number>
+}
+
+const REGISTRIES  = ['GOLD_STANDARD','VCS','TIER','ACR','CAR','ECOTRUST','OBIN','CUSTOM']
+const PROJ_TYPES  = ['reforestation','afforestation','improved_forest_mgmt','soil_carbon',
+  'methane_capture','renewable_energy','cookstoves','blue_carbon','direct_air_capture','avoided_deforestation']
+const REG_LABELS: Record<string,string> = {
+  GOLD_STANDARD:'Gold Standard', VCS:'Verra VCS', TIER:'Alberta TIER',
+  ACR:'American Carbon Reg', CAR:'Climate Action Res.', ECOTRUST:'EcoTrust CA', OBIN:'Ontario Carbon', CUSTOM:'Custom',
+}
+
+function OffsetsSection({ tenantId }: { tenantId: string }) {
+  const [offsets, setOffsets]     = useState<Offset[]>([])
+  const [netPos, setNetPos]       = useState<NetPos | null>(null)
+  const [loading, setLoading]     = useState(true)
+  const [showModal, setShowModal] = useState(false)
+  const [retiring, setRetiring]   = useState<string | null>(null)
+  const [toast, setToast]         = useState<string>('')
+  const year = new Date().getFullYear()
+
+  const [form, setForm] = useState({
+    registry: 'GOLD_STANDARD', serial_no: '', vintage_year: String(year - 1),
+    quantity_tco2: '', project_name: '', project_type: 'reforestation',
+    country: 'CA', province: '', price_per_tco2: '', co_registry_url: '', notes: '',
+  })
+  const [saving, setSaving] = useState(false)
+  const [formErr, setFormErr] = useState('')
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [r1, r2] = await Promise.all([
+        fetch(`${API_BASE}/api/tenants/${tenantId}/offsets`),
+        fetch(`${API_BASE}/api/tenants/${tenantId}/offsets/net-position?year=${year}`),
+      ])
+      if (r1.ok) { const d = await r1.json(); setOffsets(d.offsets || []) }
+      if (r2.ok) setNetPos(await r2.json())
+    } catch {}
+    finally { setLoading(false) }
+  }, [tenantId, year])
+
+  useEffect(() => { load() }, [load])
+
+  async function addOffset(e: React.FormEvent) {
+    e.preventDefault()
+    if (!form.quantity_tco2 || parseFloat(form.quantity_tco2) <= 0) { setFormErr('Quantity must be > 0'); return }
+    setSaving(true); setFormErr('')
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/offsets`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...form,
+          quantity_tco2: parseFloat(form.quantity_tco2),
+          vintage_year:  parseInt(form.vintage_year),
+          price_per_tco2: parseFloat(form.price_per_tco2 || '0') || 0,
+        }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
+      setShowModal(false)
+      setForm({ registry: 'GOLD_STANDARD', serial_no: '', vintage_year: String(year - 1),
+        quantity_tco2: '', project_name: '', project_type: 'reforestation',
+        country: 'CA', province: '', price_per_tco2: '', co_registry_url: '', notes: '' })
+      showToast(`Offset added (${d.offset_id})`)
+      load()
+    } catch (ex) { setFormErr(ex instanceof Error ? ex.message : 'Save failed') }
+    finally { setSaving(false) }
+  }
+
+  async function retire(offsetId: string) {
+    setRetiring(offsetId)
+    try {
+      const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/offsets/${offsetId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'RETIRED', retired_for: year }),
+      })
+      if (r.ok) { showToast(`Offset ${offsetId} retired for ${year}`); load() }
+    } catch {}
+    finally { setRetiring(null) }
+  }
+
+  function showToast(msg: string) { setToast(msg); setTimeout(() => setToast(''), 3000) }
+
+  const grossTco2 = netPos?.gross?.total_tco2 ?? 0
+  const netTco2   = netPos?.net_tco2          ?? 0
+  const pct       = netPos?.reduction_pct      ?? 0
+
+  return (
+    <section className="bg-gw-panel border border-gw-border rounded-xl p-6 space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="font-semibold text-white flex items-center gap-2">
+            <Archive className="w-4 h-4 text-blue-400" />
+            Carbon Offset Registry
+          </h2>
+          <p className="text-sm text-gw-muted mt-1">
+            Verified offset retirements → net emissions position. Stored in the compliance vault.
+          </p>
+        </div>
+        <button onClick={() => setShowModal(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">
+          <Plus className="w-3.5 h-3.5" /> Add Offset
+        </button>
+      </div>
+
+      {toast && (
+        <div className="bg-gw-green/10 border border-gw-green/30 rounded px-3 py-2 text-xs text-gw-green">{toast}</div>
+      )}
+
+      {/* Net position */}
+      {netPos && (
+        <div className="bg-gw-dark border border-gw-border rounded-lg p-4">
+          <div className="text-xs font-semibold text-gw-muted uppercase tracking-wide mb-3">
+            Net Emissions Position · {netPos.year}
+          </div>
+          <div className="grid grid-cols-4 gap-3 mb-3">
+            {[
+              ['Gross tCO₂e',    grossTco2.toFixed(3),              'text-amber-400'],
+              ['Offsets Retired', `${netPos.offsets_tco2?.toFixed(3) ?? 0}`, 'text-blue-400'],
+              ['Net tCO₂e',      netTco2.toFixed(3),                'text-gw-green'],
+              ['Reduction',       `${pct}%`,                        'text-gw-green'],
+            ].map(([label, val, cls]) => (
+              <div key={label} className="bg-gw-panel border border-gw-border/50 rounded p-2.5 text-center">
+                <div className="text-xs text-gw-muted mb-1">{label}</div>
+                <div className={`text-sm font-mono font-bold ${cls}`}>{val}</div>
+              </div>
+            ))}
+          </div>
+          {netPos.net_zero_ready && (
+            <div className="flex items-center gap-2 text-xs text-gw-green bg-gw-green/10 border border-gw-green/30 rounded px-3 py-2">
+              <CheckCircle className="w-3.5 h-3.5" />
+              Net-zero ready — verified net position ≈ 0 tCO₂e
+            </div>
+          )}
+          {netPos.by_registry && Object.keys(netPos.by_registry).length > 0 && (
+            <div className="flex gap-2 flex-wrap mt-2">
+              {Object.entries(netPos.by_registry).map(([reg, qty]) => (
+                <span key={reg} className="text-xs px-2 py-0.5 rounded border border-gw-border text-gw-muted">
+                  {REG_LABELS[reg] ?? reg}: {qty.toFixed(2)} t
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Offsets table */}
+      {loading ? (
+        <div className="text-sm text-gw-muted py-4">Loading…</div>
+      ) : offsets.length === 0 ? (
+        <div className="text-sm text-gw-muted py-6 text-center border border-dashed border-gw-border rounded-lg">
+          No offsets yet. Add a verified carbon offset to start tracking net emissions.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="border-b border-gw-border">
+              <tr className="text-gw-muted text-left">
+                <th className="py-2 pr-3 font-medium">ID</th>
+                <th className="py-2 pr-3 font-medium">Registry</th>
+                <th className="py-2 pr-3 font-medium">tCO₂e</th>
+                <th className="py-2 pr-3 font-medium">Project</th>
+                <th className="py-2 pr-3 font-medium">Vintage</th>
+                <th className="py-2 pr-3 font-medium">Status</th>
+                <th className="py-2 font-medium">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gw-border/40">
+              {offsets.map(o => (
+                <tr key={o.OffsetID} className="hover:bg-gw-dark/40">
+                  <td className="py-2 pr-3 font-mono text-gw-muted">{o.OffsetID}</td>
+                  <td className="py-2 pr-3">
+                    <span className="px-1.5 py-0.5 rounded text-xs border border-blue-500/30 bg-blue-500/10 text-blue-400">
+                      {REG_LABELS[o.Registry] ?? o.Registry}
+                    </span>
+                  </td>
+                  <td className="py-2 pr-3 font-mono text-gw-green">{Number(o.QuantityTco2).toFixed(3)}</td>
+                  <td className="py-2 pr-3 text-white">{o.ProjectName || '—'}</td>
+                  <td className="py-2 pr-3 text-gw-muted">{o.VintageYear}</td>
+                  <td className="py-2 pr-3">
+                    <span className={`px-1.5 py-0.5 rounded text-xs border ${
+                      o.Status === 'RETIRED'
+                        ? 'bg-gw-muted/10 border-gw-border text-gw-muted'
+                        : 'bg-blue-500/10 border-blue-500/30 text-blue-400'
+                    }`}>{o.Status}{o.RetiredFor ? ` (${o.RetiredFor})` : ''}</span>
+                  </td>
+                  <td className="py-2">
+                    {o.Status === 'ACTIVE' && (
+                      <button onClick={() => retire(o.OffsetID)} disabled={retiring === o.OffsetID}
+                        className="text-xs text-amber-400 hover:text-amber-300 disabled:opacity-50">
+                        {retiring === o.OffsetID ? '…' : 'Retire'}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Add Offset modal */}
+      {showModal && (
+        <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+          <div className="bg-gw-panel border border-gw-border rounded-xl w-full max-w-md max-h-screen overflow-y-auto">
+            <div className="px-5 py-4 border-b border-gw-border flex items-center justify-between">
+              <h3 className="font-semibold text-white">Add Carbon Offset</h3>
+              <button onClick={() => setShowModal(false)} className="text-gw-muted hover:text-white text-xl leading-none">×</button>
+            </div>
+            <form onSubmit={addOffset} className="p-5 space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-gw-muted block mb-1">Registry *</label>
+                  <select value={form.registry} onChange={e => setForm(f => ({ ...f, registry: e.target.value }))}
+                    className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                    {REGISTRIES.map(r => <option key={r} value={r}>{REG_LABELS[r] ?? r}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gw-muted block mb-1">Quantity (tCO₂e) *</label>
+                  <input type="number" min="0.001" step="0.001" required value={form.quantity_tco2}
+                    onChange={e => setForm(f => ({ ...f, quantity_tco2: e.target.value }))}
+                    className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none" />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gw-muted block mb-1">Serial Number</label>
+                <input type="text" value={form.serial_no}
+                  onChange={e => setForm(f => ({ ...f, serial_no: e.target.value }))}
+                  placeholder="Registry serial / certificate number"
+                  className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none" />
+              </div>
+              <div>
+                <label className="text-xs text-gw-muted block mb-1">Project Name</label>
+                <input type="text" value={form.project_name}
+                  onChange={e => setForm(f => ({ ...f, project_name: e.target.value }))}
+                  placeholder="e.g. Alberta Reforestation Initiative"
+                  className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-gw-muted block mb-1">Project Type</label>
+                  <select value={form.project_type} onChange={e => setForm(f => ({ ...f, project_type: e.target.value }))}
+                    className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none">
+                    {PROJ_TYPES.map(t => <option key={t} value={t}>{t.replace(/_/g,' ')}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gw-muted block mb-1">Vintage Year</label>
+                  <input type="number" min="2010" max="2030" value={form.vintage_year}
+                    onChange={e => setForm(f => ({ ...f, vintage_year: e.target.value }))}
+                    className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none" />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-gw-muted block mb-1">Country</label>
+                  <input type="text" maxLength={2} value={form.country}
+                    onChange={e => setForm(f => ({ ...f, country: e.target.value.toUpperCase() }))}
+                    className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none" />
+                </div>
+                <div>
+                  <label className="text-xs text-gw-muted block mb-1">Price/tCO₂e (CAD)</label>
+                  <input type="number" min="0" step="0.01" value={form.price_per_tco2}
+                    onChange={e => setForm(f => ({ ...f, price_per_tco2: e.target.value }))}
+                    className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none" />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs text-gw-muted block mb-1">Registry URL</label>
+                <input type="url" value={form.co_registry_url}
+                  onChange={e => setForm(f => ({ ...f, co_registry_url: e.target.value }))}
+                  placeholder="https://registry.verra.org/..."
+                  className="w-full bg-gw-dark border border-gw-border rounded px-2.5 py-1.5 text-sm text-white focus:border-blue-500 focus:outline-none" />
+              </div>
+              {formErr && <p className="text-xs text-red-400">{formErr}</p>}
+              <div className="flex gap-2 pt-1">
+                <button type="submit" disabled={saving}
+                  className="flex-1 bg-blue-600 text-white py-2 rounded text-sm font-medium hover:bg-blue-700 disabled:opacity-50">
+                  {saving ? 'Saving…' : 'Add Offset'}
+                </button>
+                <button type="button" onClick={() => setShowModal(false)}
+                  className="px-4 py-2 border border-gw-border text-gw-muted rounded text-sm hover:text-white">
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      <p className="text-xs text-gw-muted">
+        Supported registries: Gold Standard · Verra VCS · Alberta TIER · ACR · CAR.
+        Retiring an offset reduces net tCO₂e in all compliance reports and PDFs.
+      </p>
+    </section>
   )
 }
