@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { href: '/settings',   label: 'Settings'   },
   { href: '/compliance', label: 'Compliance' },
   { href: '/tcfd',       label: 'TCFD'       },
+  { href: '/ifrs-s2',    label: 'IFRS S2'    },
   { href: '/calendar',   label: 'Calendar'   },
   { href: '/copilot',    label: 'Co-Pilot'   },
 ]
