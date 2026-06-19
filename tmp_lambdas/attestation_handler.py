@@ -28,11 +28,21 @@ APP_URL = os.environ.get('APP_URL',      'https://16-174-1-7.nip.io')
 SNS_ARN = os.environ.get('SNS_ARN',      'arn:aws:sns:ca-central-1:768949138583:gw-data-layer-alerts-staging')
 SES_FROM= os.environ.get('SES_FROM',     '')  # optional: verified SES sender
 
-ddb   = boto3.resource('dynamodb', region_name=REGION)
-s3    = boto3.client('s3',         region_name=REGION)
-sns   = boto3.client('sns',        region_name=REGION)
-attest_t = ddb.Table(os.environ.get('ATTESTATIONS_TABLE', 'gw-attestations-staging'))
-tenants_t= ddb.Table(os.environ.get('TENANTS_TABLE',      'gw-tenants-staging'))
+ddb      = boto3.resource('dynamodb', region_name=REGION)
+s3       = boto3.client('s3',         region_name=REGION)
+sns      = boto3.client('sns',        region_name=REGION)
+attest_t  = ddb.Table(os.environ.get('ATTESTATIONS_TABLE', 'gw-attestations-staging'))
+tenants_t = ddb.Table(os.environ.get('TENANTS_TABLE',      'gw-tenants-staging'))
+calendar_t= ddb.Table(os.environ.get('CALENDAR_TABLE',     'gw-filing-calendar-staging'))
+
+# Map from report type labels → calendar framework tags (partial match)
+REPORT_TO_FRAMEWORK = {
+    'OSFI B-15': 'OSFI', 'OSFI': 'OSFI',
+    'TCFD': 'TCFD',
+    'IFRS S2': 'IFRS', 'ISSB': 'IFRS',
+    'GHG Protocol': 'GHG_PROTO', 'ISO 14064': 'ISO_14064',
+    'Annual ESG': 'CDP',
+}
 
 HDR = {
     'Content-Type':                'application/json',
@@ -180,6 +190,48 @@ def _create_seal(item: dict, ip: str, user_agent: str) -> tuple[str, str]:
     logger.info('Seal created: %s  hash=%s', s3_key, seal_hash[:16])
     return seal_hash, s3_key
 
+# ── Auto-file calendar deadline when attestation is sealed ────────────────────
+
+def _auto_file_calendar(tenant_id: str, report_type: str, seal_hash: str):
+    """
+    After sealing, find the nearest UPCOMING/DUE_SOON calendar deadline whose
+    Framework matches this report type and mark it FILED automatically.
+    """
+    framework_tag = None
+    for key, tag in REPORT_TO_FRAMEWORK.items():
+        if key.upper() in report_type.upper():
+            framework_tag = tag
+            break
+    if not framework_tag:
+        return
+
+    try:
+        r = calendar_t.query(KeyConditionExpression=Key('TenantID').eq(tenant_id))
+        candidates = [
+            i for i in r.get('Items', [])
+            if i.get('Status') in ('UPCOMING', 'DUE_SOON', 'OVERDUE')
+            and framework_tag.lower() in i.get('Framework', '').lower()
+        ]
+        if not candidates:
+            return
+        # Pick the soonest upcoming deadline
+        candidates.sort(key=lambda x: x.get('DueDate', ''))
+        target = candidates[0]
+        calendar_t.update_item(
+            Key={'TenantID': tenant_id, 'DeadlineID': target['DeadlineID']},
+            UpdateExpression='SET #s = :s, FiledAt = :fa, FiledNote = :fn',
+            ExpressionAttributeNames={'#s': 'Status'},
+            ExpressionAttributeValues={
+                ':s':  'FILED',
+                ':fa': _now(),
+                ':fn': f'Auto-filed on attestation seal {seal_hash[:16]}',
+            },
+        )
+        logger.info('Calendar auto-filed: %s %s → %s (framework=%s)',
+                    tenant_id, target['DeadlineID'], target.get('Title'), framework_tag)
+    except Exception as e:
+        logger.warning('Calendar auto-file failed (non-critical): %s', e)
+
 # ── Handler ───────────────────────────────────────────────────────────────────
 
 def lambda_handler(event, context):
@@ -235,6 +287,10 @@ def lambda_handler(event, context):
             },
         )
         logger.info('Attestation SEALED: %s %s', item['TenantID'], item['AttestationID'])
+
+        # Auto-file matching calendar deadline
+        _auto_file_calendar(item['TenantID'], item.get('ReportType', ''), seal_hash)
+
         return _r(200, {
             'ok':             True,
             'attestation_id': item['AttestationID'],

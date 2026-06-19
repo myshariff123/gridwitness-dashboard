@@ -230,7 +230,7 @@ def _fetch_scope3(tid, year):
     try:
         r = SCOPE3_T.query(
             KeyConditionExpression=Key('TenantID').eq(tid),
-            FilterExpression=Attr('PeriodStart').begins_with(str(year)),
+            FilterExpression=Attr('YearMonth').begins_with(str(year)),
         )
         total = sum(float(i.get('TotalKgCO2', 0)) for i in r.get('Items', []))
         return total / 1000  # tCO2e
@@ -243,6 +243,43 @@ def _fetch_budget(tid, year):
         return r.get('Item') or {}
     except Exception:
         return {}
+
+CERTIFIED_BODIES = {'EcoLogo','Green-e','I-REC','TIGR','RE100','IREC'}
+
+def _fetch_market_scope2(tid, year, scope2_location_t):
+    """Market-based Scope 2 = location-based minus retired certified RECs × grid factor."""
+    try:
+        recs_t = ddb.Table('gw-recs-staging')
+        r = recs_t.query(
+            KeyConditionExpression=Key('TenantID').eq(tid),
+            FilterExpression=Attr('Status').eq('RETIRED') & Attr('RetiredFor').eq(year)
+                             & Attr('Deleted').ne(True)
+        )
+        items   = r.get('Items', [])
+        mwh     = sum(float(i.get('MWh', 0)) for i in items)
+        c59     = len(items) > 0 and all(i.get('CertifiedBy') in CERTIFIED_BODIES for i in items)
+        market  = max(0.0, scope2_location_t - mwh * 0.5)
+        return {'market_t': round(market, 3), 'mwh': round(mwh, 2),
+                'count': len(items), 'bill_c59': c59}
+    except Exception:
+        return {'market_t': scope2_location_t, 'mwh': 0, 'count': 0, 'bill_c59': False}
+
+def _fetch_offsets_net(tid, year, gross_market_t):
+    """Net position = gross market-based minus retired certified offsets."""
+    try:
+        off_t = ddb.Table('gw-offsets-staging')
+        r = off_t.query(
+            KeyConditionExpression=Key('TenantID').eq(tid),
+            FilterExpression=Attr('Status').eq('RETIRED') & Attr('RetiredFor').eq(year)
+                             & Attr('Deleted').ne(True)
+        )
+        items  = r.get('Items', [])
+        off_t_ = sum(float(i.get('QuantityTco2', 0)) for i in items)
+        net    = max(0.0, gross_market_t - off_t_)
+        return {'offsets_t': round(off_t_, 3), 'net_t': round(net, 3),
+                'count': len(items), 'net_zero': net < 0.01}
+    except Exception:
+        return {'offsets_t': 0, 'net_t': gross_market_t, 'count': 0, 'net_zero': False}
 
 def _fetch_incidents(tid):
     try:
@@ -345,11 +382,18 @@ def _build_pdf(tid, tenant, sections, emissions, budget, sbti, incidents, grid):
     risk  = _get_section(sections, 'RISK_MGMT')
     met   = _get_section(sections, 'METRICS_CONFIG')
 
-    s1  = float(emissions.get('scope1', 0))
-    s2  = float(emissions.get('scope2', 0))
-    s3  = float(emissions.get('scope3', 0))
-    total_tco2 = s1 + s2 + s3
-    budget_tco2 = float((budget.get('AnnualBudgetKg') or 0)) / 1000
+    s1       = float(emissions.get('scope1', 0))
+    s2       = float(emissions.get('scope2', 0))
+    s2_mkt   = float(emissions.get('scope2_market', s2))
+    s3       = float(emissions.get('scope3', 0))
+    total_tco2    = s1 + s2 + s3
+    total_mkt     = s1 + s2_mkt + s3
+    net_tco2      = float(emissions.get('net', total_mkt))
+    offsets_t     = float(emissions.get('offsets', 0))
+    recs_mwh      = float((emissions.get('recs') or {}).get('mwh', 0))
+    bill_c59      = bool((emissions.get('recs') or {}).get('bill_c59', False))
+    net_zero      = bool((emissions.get('offsets_dat') or {}).get('net_zero', False))
+    budget_tco2   = float((budget.get('AnnualBudgetKg') or 0)) / 1000
 
     buf  = io.BytesIO()
     doc  = SimpleDocTemplate(
@@ -574,29 +618,40 @@ def _build_pdf(tid, tenant, sections, emissions, budget, sbti, incidents, grid):
     story.append(HRFlowable(width='100%', thickness=1, color=GW_GREEN))
     story.append(Spacer(1, 0.1*inch))
 
-    # GHG Emissions table
+    # GHG Emissions table — includes market-based Scope 2 and net position
     story.append(Paragraph('GHG Emissions Inventory', ST['h3']))
     em_data = [
-        ['Scope', 'Description', f'{year} Emissions (tCO₂e)', 'Carbon Tax Exposure (CAD)'],
-        ['Scope 1', 'Direct — Fuel Combustion',           f'{s1:,.1f}', f'${s1*price:,.0f}'],
-        ['Scope 2', 'Indirect — Purchased Electricity',   f'{s2:,.1f}', f'${s2*price:,.0f}'],
-        ['Scope 3 Cat.11', 'Cloud & Facility Services',   f'{s3:,.1f}', f'${s3*price:,.0f}'],
-        ['TOTAL', '',                                      f'{total_tco2:,.1f}', f'${ytd_liability:,.0f}'],
+        ['Scope', 'Description', f'{year} tCO₂e', 'Carbon Tax (CAD)'],
+        ['Scope 1',          'Direct — Fuel Combustion',            f'{s1:,.3f}', f'${s1*price:,.0f}'],
+        ['Scope 2 (Location)','Purchased Electricity — grid factor', f'{s2:,.3f}', f'${s2*price:,.0f}'],
+        ['Scope 2 (Market)', f'After {recs_mwh:.1f} MWh RECs retired{"*" if bill_c59 else ""}',
+                                                                     f'{s2_mkt:,.3f}', f'${s2_mkt*price:,.0f}'],
+        ['Scope 3 Cat.11',   'Cloud & Facility Services',           f'{s3:,.3f}', f'${s3*price:,.0f}'],
+        ['GROSS (location)',  '',                                    f'{total_tco2:,.3f}', f'${total_tco2*price:,.0f}'],
+        ['GROSS (market)',    'After certified REC retirements',     f'{total_mkt:,.3f}', f'${total_mkt*price:,.0f}'],
     ]
+    if offsets_t > 0:
+        em_data.append(['NET POSITION', f'After {offsets_t:,.3f} tCO₂e verified offsets',
+                         f'{net_tco2:,.3f}', f'${net_tco2*price:,.0f}'])
+    row_ct = len(em_data)
     em_extra = [
-        ('FONTNAME', (0, 4), (-1, 4), FONT_BOLD),
-        ('TEXTCOLOR', (0, 4), (-1, 4), GW_GREEN),
-        ('BACKGROUND', (0, 4), (-1, 4), GW_PANEL),
+        ('FONTNAME',   (0, row_ct-1), (-1, row_ct-1), FONT_BOLD),
+        ('TEXTCOLOR',  (0, row_ct-1), (-1, row_ct-1), GW_GREEN),
+        ('BACKGROUND', (0, row_ct-1), (-1, row_ct-1), GW_PANEL),
     ]
+    if bill_c59:
+        em_data.append(['', '* Bill C-59 compliant (EcoLogo/Green-e/I-REC certified)', '', ''])
     story.append(Table(em_data,
-        colWidths=[1.2*inch, 2.2*inch, 2*inch, 1.8*inch],
+        colWidths=[1.3*inch, 2.5*inch, 1.6*inch, 1.8*inch],
         style=_table_style(em_extra)))
+    if net_zero:
+        story.append(Paragraph('Net-Zero Ready: verified net position < 0.01 tCO₂e', ST['caption']))
     story.append(Spacer(1, 0.15*inch))
 
     # Carbon Budget
     if budget_tco2 > 0:
         story.append(Paragraph('Carbon Budget', ST['h3']))
-        remaining = max(0, budget_tco2 - total_tco2)
+        remaining = max(0, budget_tco2 - net_tco2 if offsets_t > 0 else budget_tco2 - total_tco2)
         budget_data = [
             ['Budget Element', 'Value'],
             [f'{year} Annual Budget', f'{budget_tco2:,.1f} tCO₂e'],
@@ -763,10 +818,18 @@ def lambda_handler(event, context):
     incidents= _fetch_incidents(tenant_id)
     grid     = _fetch_grid_cache()
 
-    s1 = _fetch_scope1(tenant_id, year)
-    s2 = _fetch_scope2(tenant_id, year)
-    s3 = _fetch_scope3(tenant_id, year)
-    emissions = {'scope1': s1, 'scope2': s2, 'scope3': s3}
+    s1       = _fetch_scope1(tenant_id, year)
+    s2_loc   = _fetch_scope2(tenant_id, year)
+    s3       = _fetch_scope3(tenant_id, year)
+    recs_dat = _fetch_market_scope2(tenant_id, year, s2_loc)
+    s2_mkt   = recs_dat['market_t']
+    gross_mkt= s1 + s2_mkt + s3
+    off_dat  = _fetch_offsets_net(tenant_id, year, gross_mkt)
+    emissions = {
+        'scope1': s1, 'scope2': s2_loc, 'scope2_market': s2_mkt, 'scope3': s3,
+        'gross_market': gross_mkt, 'offsets': off_dat['offsets_t'], 'net': off_dat['net_t'],
+        'recs': recs_dat, 'offsets_dat': off_dat,
+    }
 
     pdf_bytes, report_id = _build_pdf(
         tenant_id, tenant, sections, emissions, budget, sbti, incidents, grid

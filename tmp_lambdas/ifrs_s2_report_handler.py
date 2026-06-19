@@ -60,6 +60,10 @@ SCOPE3_T   = ddb.Table(os.environ.get('SCOPE3_TABLE',    'gw-scope3-staging'))
 SBTI_T     = ddb.Table(os.environ.get('SBTI_TABLE',      'gw-sbti-staging'))
 BUDGET_T   = ddb.Table(os.environ.get('BUDGET_TABLE',    'gw-carbon-budget-staging'))
 TELEM_T    = ddb.Table(os.environ.get('TELEMETRY_TABLE', 'gw-telemetry-staging'))
+RECS_T     = ddb.Table(os.environ.get('RECS_TABLE',      'gw-recs-staging'))
+OFFSETS_T  = ddb.Table(os.environ.get('OFFSETS_TABLE',   'gw-offsets-staging'))
+
+CERTIFIED_BODIES = {'EcoLogo','Green-e','I-REC','TIGR','RE100','IREC'}
 
 HDR = {
     'Content-Type':                'application/json',
@@ -222,7 +226,7 @@ def _scope2_tco2(tid, year):
 def _scope3_items(tid, year):
     try:
         r = SCOPE3_T.query(KeyConditionExpression=Key('TenantID').eq(tid),
-                           FilterExpression=Attr('PeriodStart').begins_with(str(year)))
+                           FilterExpression=Attr('YearMonth').begins_with(str(year)))
         return r.get('Items', [])
     except: return []
 
@@ -262,7 +266,42 @@ DEFAULT_S2 = {
 def _sec(d, k): return {**DEFAULT_TCFD.get(k, DEFAULT_S2.get(k, {})), **d.get(k, {})}
 
 # ── PDF builder ───────────────────────────────────────────────────────────────
-def _build(tid, tenant, tcfd, s2, s1, s2_em, s3_items, sbti, budget, grid):
+def _fetch_market_scope2(tid: str, year: int, s2_location_t: float) -> dict:
+    """Market-based Scope 2 = location minus retired REC MWh × Alberta grid factor."""
+    try:
+        r = RECS_T.query(
+            KeyConditionExpression=Key('TenantID').eq(tid),
+            FilterExpression=Attr('Status').eq('RETIRED') & Attr('RetiredFor').eq(year)
+                             & Attr('Deleted').ne(True)
+        )
+        items = r.get('Items', [])
+        mwh   = sum(float(i.get('MWh', 0)) for i in items)
+        c59   = len(items) > 0 and all(i.get('CertifiedBy') in CERTIFIED_BODIES for i in items)
+        market_t = max(0.0, s2_location_t - mwh * 0.5)
+        return {'market_t': market_t, 'mwh': mwh, 'count': len(items), 'bill_c59': c59}
+    except Exception as e:
+        logger.warning('recs fetch: %s', e)
+        return {'market_t': s2_location_t, 'mwh': 0.0, 'count': 0, 'bill_c59': False}
+
+
+def _fetch_offsets_net(tid: str, year: int, gross_market_t: float) -> dict:
+    """Net position = gross market-based minus retired verified offsets."""
+    try:
+        r = OFFSETS_T.query(
+            KeyConditionExpression=Key('TenantID').eq(tid),
+            FilterExpression=Attr('Status').eq('RETIRED') & Attr('RetiredFor').eq(year)
+                             & Attr('Deleted').ne(True)
+        )
+        items    = r.get('Items', [])
+        off_t    = sum(float(i.get('QuantityTco2', 0)) for i in items)
+        net_t    = max(0.0, gross_market_t - off_t)
+        return {'offsets_t': off_t, 'net_t': net_t, 'count': len(items), 'net_zero': net_t < 0.01}
+    except Exception as e:
+        logger.warning('offsets fetch: %s', e)
+        return {'offsets_t': 0.0, 'net_t': gross_market_t, 'count': 0, 'net_zero': False}
+
+
+def _build(tid, tenant, tcfd, s2, s1, s2_em, s3_items, sbti, budget, grid, recs_dat=None, off_dat=None):
     now     = datetime.now(timezone.utc)
     year    = date.today().year
     org     = tenant.get('OrgName', tid)
@@ -276,10 +315,19 @@ def _build(tid, tenant, tcfd, s2, s1, s2_em, s3_items, sbti, budget, grid):
     cap  = _sec(s2,   'CAPITAL_DEPLOYMENT')
     sasb = _sec(s2,   'SASB_METRICS')
 
-    s3_tco2 = sum(float(i.get('TotalKgCO2',0)) for i in s3_items) / 1000
-    total   = s1 + s2_em + s3_tco2
-    price   = CARBON_PRICE.get(year, 110)
-    tax_exp = total * price
+    s3_tco2  = sum(float(i.get('TotalKgCO2',0)) for i in s3_items) / 1000
+    recs_dat = recs_dat or {}
+    off_dat  = off_dat  or {}
+    s2_mkt   = float(recs_dat.get('market_t', s2_em))
+    recs_mwh = float(recs_dat.get('mwh', 0))
+    bill_c59 = bool(recs_dat.get('bill_c59', False))
+    off_t    = float(off_dat.get('offsets_t', 0))
+    net_zero = bool(off_dat.get('net_zero', False))
+    total    = s1 + s2_em + s3_tco2          # location-based gross
+    gross_m  = s1 + s2_mkt + s3_tco2         # market-based gross
+    net_t    = float(off_dat.get('net_t', gross_m))
+    price    = CARBON_PRICE.get(year, 110)
+    tax_exp  = total * price
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter,
@@ -538,30 +586,49 @@ def _build(tid, tenant, tcfd, s2, s1, s2_em, s3_items, sbti, budget, grid):
 
     # 4c — GHG Emissions
     story.append(Paragraph('§4c  GHG Emissions  [S2.29–S2.32]', ST['h2']))
+    total_rows = 4 + (1 if recs_mwh > 0 else 0) + (1 if off_t > 0 else 0)
     em_extra = [
-        ('FONTNAME',   (0,4), (-1,4), FB),
-        ('TEXTCOLOR',  (0,4), (-1,4), ISSB_LIGHT),
-        ('BACKGROUND', (0,4), (-1,4), ISSB_PANEL),
+        ('FONTNAME',   (0, total_rows), (-1, total_rows), FB),
+        ('TEXTCOLOR',  (0, total_rows), (-1, total_rows), ISSB_LIGHT),
+        ('BACKGROUND', (0, total_rows), (-1, total_rows), ISSB_PANEL),
     ]
     em_data = [
         ['Scope', 'Description', f'{year} (tCO₂e)', 'Method', 'Carbon Tax (CAD)'],
         ['Scope 1', 'Direct fuel combustion',
-         f'{s1:,.1f}', 'GHG Protocol',f'${s1*price:,.0f}'],
-        ['Scope 2', 'Purchased electricity',
-         f'{s2_em:,.1f}', cfg.get('Scope2Method','Market-based').replace('_',' ').title(), f'${s2_em*price:,.0f}'],
+         f'{s1:,.1f}', 'GHG Protocol', f'${s1*price:,.0f}'],
+        ['Scope 2 (Location)', 'Purchased electricity — grid intensity',
+         f'{s2_em:,.1f}', 'Location-based', f'${s2_em*price:,.0f}'],
         ['Scope 3 Cat.11', 'Use of sold products / cloud',
          f'{s3_tco2:,.1f}', 'CE API + GHG Protocol', f'${s3_tco2*price:,.0f}'],
-        ['TOTAL', 'Scope 1 + 2 + 3 Cat.11',
-         f'{total:,.1f}', '—', f'${tax_exp:,.0f}'],
     ]
+    if recs_mwh > 0:
+        c59_label = ' ✓ Bill C-59' if bill_c59 else ''
+        em_data.append([
+            'Scope 2 (Market)', f'After {recs_mwh:,.1f} MWh RECs retired{c59_label}',
+            f'{s2_mkt:,.1f}', 'Market-based (GHG Protocol S2)', f'${s2_mkt*price:,.0f}',
+        ])
+    if off_t > 0:
+        nz_label = ' — Net-Zero Ready' if net_zero else ''
+        em_data.append([
+            'NET POSITION', f'After {off_t:,.1f} tCO₂e verified offsets{nz_label}',
+            f'{net_t:,.1f}', 'Verified carbon offsets', f'${net_t*price:,.0f}',
+        ])
+    gross_label = 'GROSS (Market)' if recs_mwh > 0 else 'TOTAL'
+    em_data.append([gross_label, 'Scope 1 + Scope 2 (Market) + Scope 3',
+                    f'{gross_m:,.1f}', '—', f'${gross_m*price:,.0f}'])
     story.append(Table(em_data,
-        colWidths=[1.1*inch,2.1*inch,1.1*inch,1.5*inch,1.4*inch],
+        colWidths=[1.1*inch,2.4*inch,1.0*inch,1.5*inch,1.2*inch],
         style=_TS(em_extra)))
     story.append(Spacer(1, 0.06*inch))
-    story.append(Paragraph(
-        f'S2.32  GHG Intensity: {total/max(1,total)*1000:.1f} kgCO₂e per MWh (grid-based). '
-        f'Absolute intensity disclosure. Revenue-based intensity not yet disclosed (S2.32 option).',
-        ST['cap']))
+    cap_lines = [
+        f'S2.32  GHG Intensity: {total/max(1,total)*1000:.1f} kgCO₂e per MWh (location-based gross). '
+        f'Absolute intensity disclosure. Revenue-based intensity not yet disclosed (S2.32 option).'
+    ]
+    if bill_c59:
+        cap_lines.append('Bill C-59 (CCPA) Compliant: all retired RECs certified by an approved body (EcoLogo / I-REC / Green-e / TIGR / RE100 / IREC).')
+    if net_zero:
+        cap_lines.append('Net-Zero Ready: verified offsets retire residual emissions to < 0.01 tCO₂e.')
+    story.append(Paragraph('  '.join(cap_lines), ST['cap']))
 
     # Current grid intensities
     story.append(Spacer(1, 0.08*inch))
@@ -736,11 +803,15 @@ def lambda_handler(event, context):
     sbti    = _get_sbti(tid)
     budget  = _get_budget(tid, year)
     grid    = _grid_cache()
-    s1      = _scope1_tco2(tid, year)
-    s2_em   = _scope2_tco2(tid, year)
-    s3_items= _scope3_items(tid, year)
+    s1       = _scope1_tco2(tid, year)
+    s2_em    = _scope2_tco2(tid, year)
+    s3_items = _scope3_items(tid, year)
+    recs_dat = _fetch_market_scope2(tid, year, s2_em)
+    gross_m  = s1 + recs_dat['market_t'] + sum(float(i.get('TotalKgCO2',0)) for i in s3_items) / 1000
+    off_dat  = _fetch_offsets_net(tid, year, gross_m)
 
-    pdf, rpt_id = _build(tid, tenant, tcfd, s2, s1, s2_em, s3_items, sbti, budget, grid)
+    pdf, rpt_id = _build(tid, tenant, tcfd, s2, s1, s2_em, s3_items, sbti, budget, grid,
+                         recs_dat=recs_dat, off_dat=off_dat)
 
     key = f'ifrs-s2-reports/{tid}/{rpt_id}.pdf'
     s3.put_object(Bucket=BUCKET, Key=key, Body=pdf, ContentType='application/pdf',
