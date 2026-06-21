@@ -56,7 +56,7 @@
 | Layer | Technology | Notes |
 |---|---|---|
 | Frontend | Next.js 14 (App Router), TypeScript, Tailwind CSS | `'use client'` components throughout; dark theme |
-| Hosting | EC2 `t3.small`, ca-central-1, Ubuntu 22.04 | PM2 process manager, nginx reverse proxy, port 80 |
+| Hosting | EC2 `t3.small`, ca-central-1, Ubuntu 22.04 | PM2 process manager, nginx reverse proxy; live at **gridwitness.ca** |
 | Auth | Amazon Cognito User Pool | SSO, JWT session cookie `gw_session` (8h TTL), middleware route guard |
 | API | AWS API Gateway HTTP v2 (`rdof7lrwfj`) | PayloadFormatVersion 2.0, `$default` stage |
 | Compute | AWS Lambda Python 3.12 | All microservices serverless; reportlab layer for PDF |
@@ -334,6 +334,7 @@ DELETE /api/tenants/{tenantId}/keys/{keyId}
 
 | Route | Description | Key Data Sources |
 |---|---|---|
+| `/` | Public marketing landing page — hero, feature grid, how-it-works, CTA. No auth required. | — |
 | `/onboarding` | 3-step tenant wizard: org details → agent deploy → verify | tenant provisioning Lambda |
 | `/monitor` | Live telemetry stream, AB grid intensity, carbon budget burn rate, Verified Emissions strip (gross/market/net) | telemetry, grid-status, budget, emissions-summary |
 | `/incidents` | WORM-sealed incidents grouped by source; live threshold bars using tenant settings (not hardcoded) | incidents, grid-status, thresholds |
@@ -620,6 +621,7 @@ Lambda execution role: `arn:aws:iam::768949138583:role/gw-lambda-execution-role-
 
 | Date | Version | Change Summary |
 |---|---|---|
+| 2026-06-20 | 1.2 | Domain migrated to gridwitness.ca; public marketing landing page added at `/`; middleware updated to allow `/` and `/attest` without auth |
 | 2026-06-19 | 1.0 | Initial ARCHITECTURE.md — full feature inventory, schema reference, data flow diagrams |
 | 2026-06-14 | — | God-mode cross-tab integration: Verified Emissions strip on Monitor, Board Attestation CTAs on TCFD/IFRS S2, Compliance pre-fill from URL |
 | 2026-06-14 | — | Bug fix: Scope 3 Lambda queries used PeriodStart; corrected to YearMonth. Scope 2 scan pagination added. |

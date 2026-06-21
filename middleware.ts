@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
 // Paths that don't require a session
-const PUBLIC = ['/auth', '/onboarding', '/verify', '/health']
+const PUBLIC = ['/', '/auth', '/onboarding', '/verify', '/health', '/attest']
 
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl
