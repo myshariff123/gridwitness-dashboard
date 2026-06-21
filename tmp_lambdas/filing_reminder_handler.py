@@ -21,7 +21,7 @@ logger.setLevel(logging.INFO)
 REGION    = os.environ.get('AWS_REGION',       'ca-central-1')
 SNS_ARN   = os.environ.get('SNS_ARN',
     'arn:aws:sns:ca-central-1:768949138583:gw-data-layer-alerts-staging')
-APP_URL   = os.environ.get('APP_URL',          'https://16-174-1-7.nip.io')
+APP_URL   = os.environ.get('APP_URL',          'https://gridwitness.ca')
 
 ddb   = boto3.resource('dynamodb', region_name=REGION)
 sns   = boto3.client('sns', region_name=REGION)

@@ -24,7 +24,7 @@ logger.setLevel(logging.INFO)
 
 REGION  = os.environ.get('AWS_REGION',   'ca-central-1')
 BUCKET  = os.environ.get('S3_BUCKET',    'gw-compliance-vault-768949138583')
-APP_URL = os.environ.get('APP_URL',      'https://16-174-1-7.nip.io')
+APP_URL = os.environ.get('APP_URL',      'https://gridwitness.ca')
 SNS_ARN = os.environ.get('SNS_ARN',      'arn:aws:sns:ca-central-1:768949138583:gw-data-layer-alerts-staging')
 SES_FROM= os.environ.get('SES_FROM',     '')  # optional: verified SES sender
 
