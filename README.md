@@ -10,18 +10,18 @@ GridWitness is a compliance-grade carbon emissions monitoring platform for Canad
 
 | Resource | Value |
 |---|---|
-| Dashboard | `https://16-174-1-7.nip.io` |
+| Dashboard | `https://www.gridwitness.ca` |
 | API Gateway | `https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com` |
 | AWS Region | `ca-central-1` (Montreal — Canadian sovereign cloud) |
-| Stage | Staging |
-| SSL | Let's Encrypt via nip.io (`16-174-1-7.nip.io`) |
+| Stage | Production (Vercel) |
+| SSL | Vercel managed TLS (automatic) |
 
 ---
 
 ## Architecture
 
 ```
-Browser → Next.js 14 (App Router) on EC2 + nginx + PM2
+Browser → Next.js 14 (App Router) on Vercel (Edge Network, www.gridwitness.ca)
              │
              ├── AWS Cognito (SSO login, custom:tenant_id claim)
              │
@@ -186,20 +186,32 @@ NEXT_PUBLIC_COGNITO_USER_POOL_ID=ca-central-1_IcSJiRC6e
 NEXT_PUBLIC_COGNITO_CLIENT_ID=4hpe00jpi8mlkntjkh8vkckqhv
 NEXT_PUBLIC_COGNITO_DOMAIN=gw-auth-staging-768949138583.auth.ca-central-1.amazoncognito.com
 NEXT_PUBLIC_COGNITO_REGION=ca-central-1
-NEXT_PUBLIC_APP_URL=https://16-174-1-7.nip.io
+NEXT_PUBLIC_APP_URL=https://www.gridwitness.ca
 ```
 
 ---
 
-## Deploy to EC2
+## Deploy to Vercel
+
+Deployments are **automatic** — push to `main` and Vercel builds and deploys within ~2 minutes.
+
+> **Required:** The GitHub repo must be **public** (GitHub → Settings → Danger Zone → Change visibility → Make public) so Vercel Hobby Plan accepts commits from co-authors.
 
 ```bash
-ssh -i ~/Downloads/gw-deploy-key.pem ubuntu@16.174.1.7
-cd /home/ubuntu/gridwitness-dashboard
-git pull origin main && npm run build && pm2 restart gridwitness-dashboard
+git add <files>
+git commit -m "your message"
+git push origin main
+# → Vercel auto-deploys to https://www.gridwitness.ca
 ```
 
----
+**Vercel project:** nimble-stride-s-projects / gridwitness-dashboard
+**Custom domain:** `www.gridwitness.ca` and `gridwitness.ca` (added in Vercel → Domains)
+**GoDaddy DNS records required:**
+
+| Type | Name | Value |
+|---|---|---|
+| A | `@` | `216.198.79.1` |
+| CNAME | `www` | `cname.vercel-dns.com` |
 
 ## Lambda Reference
 
