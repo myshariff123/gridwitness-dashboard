@@ -56,7 +56,7 @@
 | Layer | Technology | Notes |
 |---|---|---|
 | Frontend | Next.js 14 (App Router), TypeScript, Tailwind CSS | `'use client'` components throughout; dark theme |
-| Hosting | EC2 `t3.small`, ca-central-1, Ubuntu 22.04 | PM2 process manager, nginx reverse proxy; live at **gridwitness.ca** |
+| Hosting | Vercel (Hobby, auto-deploy, Edge Network) | Push to `main` triggers build; custom domain www.gridwitness.ca |
 | Auth | Amazon Cognito User Pool | SSO, JWT session cookie `gw_session` (8h TTL), middleware route guard |
 | API | AWS API Gateway HTTP v2 (`rdof7lrwfj`) | PayloadFormatVersion 2.0, `$default` stage |
 | Compute | AWS Lambda Python 3.12 | All microservices serverless; reportlab layer for PDF |
@@ -81,7 +81,7 @@
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  Browser                                                │
-│  Next.js 14 (EC2 16.174.1.7, nginx, PM2)               │
+│  Next.js 14 (Vercel (Edge Network))               │
 └───────────────────────┬─────────────────────────────────┘
                         │ HTTPS
                         ▼
@@ -571,30 +571,38 @@ Board member checks box → POST /api/attestations/{token}/seal {confirmed: true
 ## 14. Deployment Runbook
 
 ### Standard Code Deploy
+
+Vercel deploys automatically on every push to `main`. No SSH or server access needed.
+
+> **Required one-time setup:** Make the GitHub repo **public** (GitHub → Settings → Danger Zone → Change visibility → Make public) so Vercel Hobby Plan accepts all commit authors.
+
 ```bash
 # Local: commit and push
 git add <files>
 git commit -m "your message"
 git push origin main
-
-# EC2: pull, build, restart
-ssh -i ~/Downloads/gw-deploy-key.pem ubuntu@16.174.1.7
-cd ~/gridwitness-dashboard
-git pull origin main
-npm run build
-pm2 restart gridwitness-dashboard
-pm2 list   # verify status: online
+# → Vercel auto-builds and deploys to https://www.gridwitness.ca in ~2 min
 ```
+
+**Domain configuration (GoDaddy DNS):**
+
+| Type | Name | Value |
+|---|---|---|
+| A | `@` | `216.198.79.1` |
+| CNAME | `www` | `cname.vercel-dns.com` |
+
+**Vercel project:** nimble-stride-s-projects / gridwitness-dashboard  
+**Vercel domains added:** `gridwitness.ca` (308 → www) and `www.gridwitness.ca` (Production)
 
 ### Lambda Deploy (from local Windows)
 ```bash
 # SCP handler to EC2
 scp -i ~/Downloads/gw-deploy-key.pem \
     /c/Users/myous/Desktop/gridwitness-dashboard/tmp_lambdas/<handler>.py \
-    ubuntu@16.174.1.7:/tmp/
+    # Vercel — no SSH needed:/tmp/
 
 # SSH + zip + deploy
-ssh -i ~/Downloads/gw-deploy-key.pem ubuntu@16.174.1.7
+ssh -i ~/Downloads/gw-deploy-key.pem # Vercel — no SSH needed
 cd /tmp
 zip <handler>.zip <handler>.py
 aws lambda update-function-code --region ca-central-1 \
@@ -621,6 +629,7 @@ Lambda execution role: `arn:aws:iam::768949138583:role/gw-lambda-execution-role-
 
 | Date | Version | Change Summary |
 |---|---|---|
+| 2026-06-30 | Migrate hosting from EC2+nginx to Vercel; update domain to www.gridwitness.ca; fix GoDaddy DNS |
 | 2026-06-20 | 1.2 | Domain migrated to gridwitness.ca; public marketing landing page added at `/`; middleware updated to allow `/` and `/attest` without auth |
 | 2026-06-19 | 1.0 | Initial ARCHITECTURE.md — full feature inventory, schema reference, data flow diagrams |
 | 2026-06-14 | — | God-mode cross-tab integration: Verified Emissions strip on Monitor, Board Attestation CTAs on TCFD/IFRS S2, Compliance pre-fill from URL |
