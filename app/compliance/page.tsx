@@ -83,17 +83,14 @@ type FrameworkDef = {
     color: string
 }
 
-function StatusTile({
-  framework,
-  downloadUrl,
-  reportId,
-  onGenerate,
-}: {
-    framework: FrameworkDef
+type StatusTileProps = {
+  framework: FrameworkDef
   downloadUrl: string | null
   reportId: string | null
   onGenerate: () => void
-}) {
+}
+
+function StatusTile({ framework, downloadUrl, reportId, onGenerate }: StatusTileProps) {
   const tileStatus = getStatusFromReport(downloadUrl, reportId, framework.cadenceDays)
 
   const statusConfig = {
@@ -104,7 +101,7 @@ function StatusTile({
   }[tileStatus]
 
   const StatusIcon = statusConfig.icon
-  const frameColors: Record<string, string> = {
+  const frameColors = {
     blue: 'text-blue-400', purple: 'text-purple-400', indigo: 'text-indigo-400', teal: 'text-teal-400'
   }
 
@@ -392,11 +389,13 @@ interface AttestRecord {
   Status: string; RequestedAt: string; SealHash?: string; AttestationLink?: string
 }
 
+type AttestResult = { link: string; id: string; emailSent: boolean }
+
 function BoardAttestationSection({ tenantId }: { tenantId: string }) {
   const [list, setList] = useState<AttestRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
-  const [result, setResult] = useState<{ link: string; id: string; emailSent: boolean } | null>(null)
+  const [result, setResult] = useState<AttestResult | null>(null)
   const [copied, setCopied] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState('')
