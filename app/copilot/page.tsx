@@ -115,7 +115,7 @@ export default function CopilotPage() {
         const totalWatts = records.reduce((s, r) => s + r.Actual_Wattage, 0)
         const abGrid = grids.find(g => g.GridID === 'AB')
         const onGrid = grids.find(g => g.GridID === 'ON')
-        const infraTypes = [...new Set(records.map(r => r.InfraType).filter(Boolean))].slice(0, 4)
+                const infraTypes = Array.from(new Set(records.map(r => r.InfraType).filter(Boolean))).slice(0, 4)
         const scope1CO2 = records.filter(r => r.InfraType === 'BMC Redfish' || r.DataSource === 'REDFISH_BMC').reduce((s, r) => s + r.gCO2e, 0)
         const scope2CO2 = totalCO2 - scope1CO2
 
