@@ -74,6 +74,14 @@ function getStatusFromReport(downloadUrl: string | null, reportId: string | null
   }
   return 'compliant'
 }
+type FrameworkDef = {
+    id: string
+    label: string
+    fullName: string
+    description: string
+    cadenceDays: number
+    color: string
+}
 
 function StatusTile({
   framework,
@@ -81,7 +89,7 @@ function StatusTile({
   reportId,
   onGenerate,
 }: {
-  framework: typeof COMPLIANCE_FRAMEWORKS[0]
+    framework: FrameworkDef
   downloadUrl: string | null
   reportId: string | null
   onGenerate: () => void
