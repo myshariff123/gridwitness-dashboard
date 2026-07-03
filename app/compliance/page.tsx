@@ -92,53 +92,9 @@ type StatusTileProps = {
 
 function StatusTile({ framework, downloadUrl, reportId, onGenerate }: StatusTileProps) {
   const tileStatus = getStatusFromReport(downloadUrl, reportId, framework.cadenceDays)
+  const cfg = { compliant: true, overdue: false }[tileStatus] ?? null
+  return <div>{framework.label}</div>
 
-  const statusConfig = {
-    compliant: { label: 'Covered', icon: CheckCircle, color: 'text-gw-green', bg: 'bg-gw-green/10', border: 'border-gw-green/30' },
-    'due-soon': { label: 'Due Soon', icon: Clock, color: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/30' },
-    overdue: { label: 'Overdue', icon: AlertTriangle, color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/30' },
-    pending: { label: 'Pending Report', icon: AlertCircle, color: 'text-gw-muted', bg: 'bg-gw-dark', border: 'border-gw-border border-dashed' },
-  }[tileStatus]
-
-  const StatusIcon = statusConfig.icon
-  const frameColors = {
-    blue: 'text-blue-400', purple: 'text-purple-400', indigo: 'text-indigo-400', teal: 'text-teal-400'
-  }
-
-  return (
-    <div className={`rounded-xl border p-4 ${statusConfig.bg} ${statusConfig.border} flex flex-col gap-3`}>
-      <div className="flex items-start justify-between">
-        <div>
-          <div className={`text-xs font-bold uppercase tracking-wider ${frameColors[framework.color]}`}>
-            {framework.label}
-          </div>
-          <div className="text-xs text-gw-muted mt-0.5">{framework.description}</div>
-        </div>
-        <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${statusConfig.color} bg-black/20 border ${statusConfig.border}`}>
-          <StatusIcon className="w-3 h-3" />
-          {statusConfig.label}
-        </div>
-      </div>
-
-      <div className="flex items-center justify-between mt-auto">
-        <div className="text-xs text-gw-muted">
-          {downloadUrl ? 'Report on file' : `Required every ${framework.cadenceDays}d`}
-        </div>
-        {tileStatus !== 'compliant' && (
-          <button onClick={onGenerate}
-            className="text-xs text-gw-green hover:underline flex items-center gap-1">
-            <FileText className="w-3 h-3" /> Generate
-          </button>
-        )}
-        {tileStatus === 'compliant' && downloadUrl && (
-          <button onClick={() => window.open(downloadUrl, '_blank', 'noopener')}
-            className="text-xs text-gw-muted hover:text-gw-green flex items-center gap-1">
-            <Download className="w-3 h-3" /> View
-          </button>
-        )}
-      </div>
-    </div>
-  )
 }
 
 export default function CompliancePage() {
