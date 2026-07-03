@@ -1,53 +1,161 @@
 'use client'
-// app/compliance/page.tsx — Compliance report generation + download
-// Drop-in replacement. Uses lib/api.ts for envelope-aware fetching.
+// app/compliance/page.tsx — Compliance status dashboard + report generation
 
 import { useEffect, useState, useCallback } from 'react'
 import Nav from '@/components/Nav'
 import {
   FileText, Loader, CheckCircle, AlertCircle,
   Download, RefreshCw, Shield, Calendar, Lock, Send,
+  TrendingUp, Clock, AlertTriangle,
 } from 'lucide-react'
-import {
-  generateReport, getLatestReport,
-} from '@/lib/api'
+import { generateReport, getLatestReport } from '@/lib/api'
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ||
   'https://rdof7lrwfj.execute-api.ca-central-1.amazonaws.com'
 
 const FRAMEWORKS = [
-  { id: 'OSFI_B15',  label: 'OSFI Guideline B-15',  required: true,  desc: 'Climate Risk Management' },
-  { id: 'BILL_C59',  label: 'Bill C-59 (Canada)',   required: true,  desc: 'Anti-Greenwashing' },
-  { id: 'ISO_14064', label: 'ISO 14064-1',          required: false, desc: 'GHG Quantification' },
-  { id: 'GHG_PROTO', label: 'GHG Protocol',         required: false, desc: 'Scope 2 + Scope 3 Cat.11' },
+  { id: 'OSFI_B15', label: 'OSFI Guideline B-15', required: true, desc: 'Climate Risk Management' },
+  { id: 'BILL_C59', label: 'Bill C-59 (Canada)', required: true, desc: 'Anti-Greenwashing' },
+  { id: 'ISO_14064', label: 'ISO 14064-1', required: false, desc: 'GHG Quantification' },
+  { id: 'GHG_PROTO', label: 'GHG Protocol', required: false, desc: 'Scope 2 + Scope 3 Cat.11' },
+]
+
+// Status tiles shown at the top of the page
+const COMPLIANCE_FRAMEWORKS = [
+  {
+    id: 'OSFI_B15',
+    label: 'OSFI B-15',
+    fullName: 'OSFI Guideline B-15',
+    description: 'Climate Risk Management',
+    cadenceDays: 90,
+    color: 'blue',
+  },
+  {
+    id: 'TCFD',
+    label: 'TCFD',
+    fullName: 'Task Force on Climate Disclosures',
+    description: 'Annual climate-related financial disclosure',
+    cadenceDays: 365,
+    color: 'purple',
+  },
+  {
+    id: 'IFRS_S2',
+    label: 'IFRS S2',
+    fullName: 'IFRS S2 Climate Disclosures',
+    description: 'Climate-related risks & opportunities',
+    cadenceDays: 365,
+    color: 'indigo',
+  },
+  {
+    id: 'BILL_C59',
+    label: 'Bill C-59',
+    fullName: 'Bill C-59 (Canada)',
+    description: 'Anti-greenwashing environmental claims',
+    cadenceDays: 180,
+    color: 'teal',
+  },
 ]
 
 type Status = 'idle' | 'queueing' | 'queued' | 'polling' | 'ready' | 'error'
+type TileStatus = 'compliant' | 'due-soon' | 'overdue' | 'pending'
+
+function getStatusFromReport(downloadUrl: string | null, reportId: string | null, cadenceDays: number): TileStatus {
+  if (!downloadUrl) return 'pending'
+  // Extract date from reportId if it contains one, otherwise use 'recent'
+  if (reportId) {
+    const match = reportId.match(/(\d{4}-\d{2}-\d{2})/)
+    if (match) {
+      const reportDate = new Date(match[1])
+      const daysSince = Math.floor((Date.now() - reportDate.getTime()) / 86400000)
+      if (daysSince > cadenceDays) return 'overdue'
+      if (daysSince > cadenceDays * 0.8) return 'due-soon'
+      return 'compliant'
+    }
+  }
+  return 'compliant'
+}
+
+function StatusTile({
+  framework,
+  downloadUrl,
+  reportId,
+  onGenerate,
+}: {
+  framework: typeof COMPLIANCE_FRAMEWORKS[0]
+  downloadUrl: string | null
+  reportId: string | null
+  onGenerate: () => void
+}) {
+  const tileStatus = getStatusFromReport(downloadUrl, reportId, framework.cadenceDays)
+
+  const statusConfig = {
+    compliant: { label: 'Covered', icon: CheckCircle, color: 'text-gw-green', bg: 'bg-gw-green/10', border: 'border-gw-green/30' },
+    'due-soon': { label: 'Due Soon', icon: Clock, color: 'text-yellow-400', bg: 'bg-yellow-500/10', border: 'border-yellow-500/30' },
+    overdue: { label: 'Overdue', icon: AlertTriangle, color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/30' },
+    pending: { label: 'Pending Report', icon: AlertCircle, color: 'text-gw-muted', bg: 'bg-gw-dark', border: 'border-gw-border border-dashed' },
+  }[tileStatus]
+
+  const StatusIcon = statusConfig.icon
+  const frameColors: Record<string, string> = {
+    blue: 'text-blue-400', purple: 'text-purple-400', indigo: 'text-indigo-400', teal: 'text-teal-400'
+  }
+
+  return (
+    <div className={`rounded-xl border p-4 ${statusConfig.bg} ${statusConfig.border} flex flex-col gap-3`}>
+      <div className="flex items-start justify-between">
+        <div>
+          <div className={`text-xs font-bold uppercase tracking-wider ${frameColors[framework.color]}`}>
+            {framework.label}
+          </div>
+          <div className="text-xs text-gw-muted mt-0.5">{framework.description}</div>
+        </div>
+        <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${statusConfig.color} bg-black/20 border ${statusConfig.border}`}>
+          <StatusIcon className="w-3 h-3" />
+          {statusConfig.label}
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between mt-auto">
+        <div className="text-xs text-gw-muted">
+          {downloadUrl ? 'Report on file' : `Required every ${framework.cadenceDays}d`}
+        </div>
+        {tileStatus !== 'compliant' && (
+          <button onClick={onGenerate}
+            className="text-xs text-gw-green hover:underline flex items-center gap-1">
+            <FileText className="w-3 h-3" /> Generate
+          </button>
+        )}
+        {tileStatus === 'compliant' && downloadUrl && (
+          <button onClick={() => window.open(downloadUrl, '_blank', 'noopener')}
+            className="text-xs text-gw-muted hover:text-gw-green flex items-center gap-1">
+            <Download className="w-3 h-3" /> View
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
 
 export default function CompliancePage() {
-  const [tenantId, setTenantId]       = useState('GW-NIMBL-AEB47A92')
-  const [dateFrom, setDateFrom]       = useState(defaultFrom())
-  const [dateTo, setDateTo]           = useState(defaultTo())
-  const [selected, setSelected]       = useState<string[]>(['OSFI_B15', 'BILL_C59', 'ISO_14064', 'GHG_PROTO'])
-  const [status, setStatus]           = useState<Status>('idle')
-  const [errMsg, setErrMsg]           = useState<string | null>(null)
-  const [reportId, setReportId]       = useState<string | null>(null)
+  const [tenantId, setTenantId] = useState('GW-NIMBL-AEB47A92')
+  const [dateFrom, setDateFrom] = useState(defaultFrom())
+  const [dateTo, setDateTo] = useState(defaultTo())
+  const [selected, setSelected] = useState<string[]>(['OSFI_B15', 'BILL_C59', 'ISO_14064', 'GHG_PROTO'])
+  const [status, setStatus] = useState<Status>('idle')
+  const [errMsg, setErrMsg] = useState<string | null>(null)
+  const [reportId, setReportId] = useState<string | null>(null)
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null)
-  const [pollTick, setPollTick]       = useState(0)
+  const [pollTick, setPollTick] = useState(0)
 
   useEffect(() => {
     if (typeof window === 'undefined') return
     const url = new URLSearchParams(window.location.search)
-    setTenantId(url.get('tenant_id') ||
-                window.localStorage.getItem('gw_tenant_id') ||
-                'GW-NIMBL-AEB47A92')
-    // Store prefill params for BoardAttestationSection
+    setTenantId(url.get('tenant_id') || window.localStorage.getItem('gw_tenant_id') || 'GW-NIMBL-AEB47A92')
     if (url.get('report_type')) {
       window.sessionStorage.setItem('gw_attest_prefill_type', url.get('report_type') || '')
     }
   }, [])
 
-  // Load latest report on mount
   const loadLatest = useCallback(async () => {
     try {
       const data = await getLatestReport(tenantId)
@@ -55,14 +163,11 @@ export default function CompliancePage() {
         setDownloadUrl(data.download_url)
         setReportId(data.report_id || null)
       }
-    } catch (e) {
-      console.error('Latest report fetch failed:', e)
-    }
+    } catch (e) { console.error('Latest report fetch failed:', e) }
   }, [tenantId])
 
   useEffect(() => { loadLatest() }, [loadLatest])
 
-  // Polling effect — while status is 'polling', re-check every 5s
   useEffect(() => {
     if (status !== 'polling') return
     const interval = setInterval(async () => {
@@ -70,30 +175,19 @@ export default function CompliancePage() {
       try {
         const data = await getLatestReport(tenantId)
         if (data?.download_url && data.report_id !== reportId) {
-          // We got a new report, different from the one we had before
-          setDownloadUrl(data.download_url)
-          setReportId(data.report_id || null)
-          setStatus('ready')
+          setDownloadUrl(data.download_url); setReportId(data.report_id || null); setStatus('ready')
         } else if (data?.download_url && pollTick > 8) {
-          // 40 seconds passed; might have been an existing report. Take what we got.
-          setDownloadUrl(data.download_url)
-          setReportId(data.report_id || null)
-          setStatus('ready')
+          setDownloadUrl(data.download_url); setReportId(data.report_id || null); setStatus('ready')
         }
-      } catch (e) {
-        console.error('Poll error:', e)
-      }
-      if (pollTick > 24) {  // 2 minutes timeout
-        setStatus('error')
-        setErrMsg('Report generation timed out. Check the compliance vault directly.')
-      }
+      } catch (e) { console.error('Poll error:', e) }
+      if (pollTick > 24) { setStatus('error'); setErrMsg('Report generation timed out. Check the compliance vault directly.') }
     }, 5000)
     return () => clearInterval(interval)
   }, [status, pollTick, tenantId, reportId])
 
   function toggleFramework(id: string) {
     const fw = FRAMEWORKS.find(f => f.id === id)
-    if (fw?.required) return  // can't deselect required
+    if (fw?.required) return
     setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id])
   }
 
@@ -103,14 +197,9 @@ export default function CompliancePage() {
     try {
       const result = await generateReport(tenantId, dateFrom, dateTo, selected)
       if (result.download_url) {
-        // Lambda returned synchronously with a pre-signed URL — no polling needed
-        setDownloadUrl(result.download_url)
-        setReportId(result.report_id || null)
-        setStatus('ready')
+        setDownloadUrl(result.download_url); setReportId(result.report_id || null); setStatus('ready')
       } else {
-        // Async path — fall back to polling
-        setStatus('polling')
-        setReportId(prevReportId)
+        setStatus('polling'); setReportId(prevReportId)
       }
     } catch (e: unknown) {
       setStatus('error')
@@ -118,72 +207,99 @@ export default function CompliancePage() {
     }
   }
 
-  function downloadReport() {
-    if (!downloadUrl) return
-    window.open(downloadUrl, '_blank', 'noopener')
+  // Scroll to generate section when a tile triggers generate
+  function scrollToGenerate() {
+    document.getElementById('gw-generate-section')?.scrollIntoView({ behavior: 'smooth' })
   }
 
   return (
     <div className="min-h-screen bg-gw-dark">
       <Nav tenantId={tenantId} />
-
       <div className="max-w-4xl mx-auto px-4 py-8 space-y-6">
 
+        {/* Page header */}
         <div>
           <h1 className="text-xl font-bold text-white flex items-center gap-2">
             <Shield className="w-5 h-5 text-gw-green" />
-            Compliance Reports
+            Compliance Status
           </h1>
           <p className="text-sm text-gw-muted mt-1">
-            Generate hardware-anchored, WORM-sealed PDF reports for regulators and auditors.
+            Real-time status across all regulatory frameworks · Hardware-anchored, WORM-sealed reports
           </p>
         </div>
 
-        {/* Period selector */}
+        {/* ── STATUS TILES ── */}
+        <section>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold text-gw-muted uppercase tracking-wider">Framework Coverage</h2>
+            <div className="flex items-center gap-3 text-xs text-gw-muted">
+              <span className="flex items-center gap-1"><CheckCircle className="w-3 h-3 text-gw-green" /> Covered</span>
+              <span className="flex items-center gap-1"><Clock className="w-3 h-3 text-yellow-400" /> Due Soon</span>
+              <span className="flex items-center gap-1"><AlertCircle className="w-3 h-3 text-gw-muted" /> Pending</span>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {COMPLIANCE_FRAMEWORKS.map(fw => (
+              <StatusTile key={fw.id} framework={fw} downloadUrl={downloadUrl} reportId={reportId} onGenerate={scrollToGenerate} />
+            ))}
+          </div>
+        </section>
+
+        {/* ── LAST REPORT BANNER (if exists) ── */}
+        {downloadUrl && (
+          <section className="bg-gw-panel border border-gw-green/30 rounded-xl p-5">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <CheckCircle className="w-5 h-5 text-gw-green flex-shrink-0" />
+                <div>
+                  <div className="text-white font-medium text-sm">Latest Report Available</div>
+                  <div className="text-xs text-gw-muted font-mono mt-0.5">{reportId || 'Report on file'}</div>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={loadLatest}
+                  className="flex items-center gap-1 border border-gw-border text-gw-muted px-3 py-1.5 rounded text-xs hover:border-gw-green hover:text-gw-green">
+                  <RefreshCw className="w-3 h-3" /> Refresh
+                </button>
+                <button onClick={() => window.open(downloadUrl, '_blank', 'noopener')}
+                  className="flex items-center gap-2 bg-gw-green text-gw-dark px-3 py-1.5 rounded text-xs font-medium hover:bg-gw-green/90">
+                  <Download className="w-3.5 h-3.5" /> Download PDF
+                </button>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {/* ── PERIOD SELECTOR ── */}
         <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
           <h2 className="font-semibold text-white flex items-center gap-2 mb-4">
-            <Calendar className="w-4 h-4 text-gw-green" />
-            Report Period
+            <Calendar className="w-4 h-4 text-gw-green" /> Report Period
           </h2>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs uppercase tracking-wider text-gw-muted mb-1">From</label>
-              <input
-                type="date"
-                value={dateFrom}
-                onChange={e => setDateFrom(e.target.value)}
-                className="w-full bg-gw-dark border border-gw-border rounded px-3 py-2 text-sm text-white focus:border-gw-green focus:outline-none"
-              />
+              <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+                className="w-full bg-gw-dark border border-gw-border rounded px-3 py-2 text-sm text-white focus:border-gw-green focus:outline-none" />
             </div>
             <div>
               <label className="block text-xs uppercase tracking-wider text-gw-muted mb-1">To</label>
-              <input
-                type="date"
-                value={dateTo}
-                onChange={e => setDateTo(e.target.value)}
-                className="w-full bg-gw-dark border border-gw-border rounded px-3 py-2 text-sm text-white focus:border-gw-green focus:outline-none"
-              />
+              <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+                className="w-full bg-gw-dark border border-gw-border rounded px-3 py-2 text-sm text-white focus:border-gw-green focus:outline-none" />
             </div>
           </div>
         </section>
 
-        {/* Frameworks */}
+        {/* ── FRAMEWORKS ── */}
         <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
-          <h2 className="font-semibold text-white mb-4">Compliance Frameworks</h2>
+          <h2 className="font-semibold text-white mb-4">Include in Report</h2>
           <div className="space-y-2">
             {FRAMEWORKS.map(fw => {
               const isSelected = selected.includes(fw.id)
               return (
-                <button
-                  key={fw.id}
-                  onClick={() => toggleFramework(fw.id)}
-                  disabled={fw.required}
+                <button key={fw.id} onClick={() => toggleFramework(fw.id)} disabled={fw.required}
                   className={`w-full flex items-center justify-between p-3 rounded border transition-colors text-left ${
-                    isSelected
-                      ? 'bg-gw-green/10 border-gw-green/30'
-                      : 'bg-gw-dark border-gw-border hover:border-gw-border/80'
-                  } ${fw.required ? 'cursor-default' : 'cursor-pointer'}`}
-                >
+                    isSelected ? 'bg-gw-green/10 border-gw-green/30' : 'bg-gw-dark border-gw-border hover:border-gw-border/80'
+                  } ${fw.required ? 'cursor-default' : 'cursor-pointer'}`}>
                   <div className="flex items-center gap-3">
                     <div className={`w-4 h-4 rounded border-2 flex items-center justify-center ${
                       isSelected ? 'bg-gw-green border-gw-green' : 'border-gw-border'
@@ -191,49 +307,35 @@ export default function CompliancePage() {
                       {isSelected && <CheckCircle className="w-3 h-3 text-gw-dark" />}
                     </div>
                     <div>
-                      <div className={`text-sm font-medium ${isSelected ? 'text-gw-green' : 'text-white'}`}>
-                        {fw.label}
-                      </div>
+                      <div className={`text-sm font-medium ${isSelected ? 'text-gw-green' : 'text-white'}`}>{fw.label}</div>
                       <div className="text-xs text-gw-muted">{fw.desc}</div>
                     </div>
                   </div>
-                  {fw.required && (
-                    <span className="text-xs px-2 py-0.5 bg-gw-green/20 text-gw-green rounded">Required</span>
-                  )}
+                  {fw.required && <span className="text-xs px-2 py-0.5 bg-gw-green/20 text-gw-green rounded">Required</span>}
                 </button>
               )
             })}
           </div>
         </section>
 
-        {/* Generate */}
-        <section className="bg-gw-panel border border-gw-border rounded-xl p-6">
+        {/* ── GENERATE ── */}
+        <section id="gw-generate-section" className="bg-gw-panel border border-gw-border rounded-xl p-6">
           <div className="flex items-center justify-between gap-4">
             <div className="flex-1">
-              <div className="text-sm text-white font-medium">Generate OSFI B-15 Compliance PDF</div>
-              <div className="text-xs text-gw-muted mt-1">
-                Cryptographically sealed · 7-year retention · Independently verifiable
-              </div>
+              <div className="text-sm text-white font-medium">Generate Compliance PDF</div>
+              <div className="text-xs text-gw-muted mt-1">Cryptographically sealed · 7-year retention · Independently verifiable</div>
             </div>
-            <button
-              onClick={handleGenerate}
+            <button onClick={handleGenerate}
               disabled={status === 'queueing' || status === 'polling' || selected.length === 0}
               className={`flex items-center gap-2 px-5 py-2.5 rounded-lg font-medium transition-colors ${
                 status === 'queueing' || status === 'polling'
                   ? 'bg-gw-border text-gw-muted cursor-wait'
                   : 'bg-gw-green text-gw-dark hover:bg-gw-green/90'
-              }`}
-            >
+              }`}>
               {(status === 'queueing' || status === 'polling') ? (
-                <>
-                  <Loader className="w-4 h-4 animate-spin" />
-                  {status === 'queueing' ? 'Generating PDF…' : `Polling… (${pollTick * 5}s)`}
-                </>
+                <><Loader className="w-4 h-4 animate-spin" />{status === 'queueing' ? 'Generating PDF…' : `Polling… (${pollTick * 5}s)`}</>
               ) : (
-                <>
-                  <FileText className="w-4 h-4" />
-                  Generate Report
-                </>
+                <><FileText className="w-4 h-4" />Generate Report</>
               )}
             </button>
           </div>
@@ -244,59 +346,21 @@ export default function CompliancePage() {
               <div>
                 <div className="text-red-400 font-medium">Failed</div>
                 <div className="text-xs text-red-400/80 mt-1">{errMsg}</div>
-                <div className="text-xs text-gw-muted mt-2">
-                  If this is persistent, open the browser DevTools Console for the underlying error.
-                </div>
               </div>
             </div>
           )}
-
           {(status === 'polling' || status === 'queued') && (
-            <div className="mt-4 flex items-center gap-2 p-3 bg-blue-500/10 border border-blue-500/30 rounded text-sm">
+            <div className=\mt-4 flex items-center gap-2 p-3 bg-blue-500/10 border border-blue-500/30 rounded text-sm">
               <Loader className="w-4 h-4 text-blue-400 animate-spin" />
-              <div className="text-blue-400">
-                Generating PDF report — this typically takes 60–90 seconds.
-                The report will be WORM-sealed and a download link will appear when ready.
-              </div>
+              <div className="text-blue-400">Generating PDF report — typically 60–90 seconds. WORM-sealed on completion.</div>
             </div>
           )}
         </section>
 
-        {/* Latest report */}
-        {downloadUrl && (
-          <section className="bg-gw-panel border border-gw-green/30 rounded-xl p-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <CheckCircle className="w-6 h-6 text-gw-green flex-shrink-0" />
-                <div>
-                  <div className="text-white font-medium">Latest Report Available</div>
-                  <div className="text-xs text-gw-muted font-mono mt-0.5">{reportId || ''}</div>
-                </div>
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={loadLatest}
-                  className="flex items-center gap-1 border border-gw-border text-gw-muted px-3 py-2 rounded text-sm hover:border-gw-green hover:text-gw-green"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  Refresh
-                </button>
-                <button
-                  onClick={downloadReport}
-                  className="flex items-center gap-2 bg-gw-green text-gw-dark px-4 py-2 rounded font-medium hover:bg-gw-green/90"
-                >
-                  <Download className="w-4 h-4" />
-                  Download PDF
-                </button>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {/* Board Attestation */}
+        {/* ── BOARD ATTESTATION ── */}
         <BoardAttestationSection tenantId={tenantId} />
 
-        {/* Help */}
+        {/* ── ABOUT ── */}
         <section className="bg-gw-panel border border-gw-border rounded-xl p-5 text-sm text-gw-muted">
           <h3 className="text-white font-semibold mb-2">About the Report</h3>
           <ul className="space-y-1.5 text-xs">
@@ -313,7 +377,7 @@ export default function CompliancePage() {
   )
 }
 
-// ── Board Attestation Section ─────────────────────────────────────────────────
+// ── Board Attestation Section (unchanged) ────────────────────────────────────
 interface AttestRecord {
   AttestationID: string; ReportType: string; ReportID?: string
   AttesterName: string; AttesterEmail: string; AttesterTitle?: string
@@ -321,14 +385,13 @@ interface AttestRecord {
 }
 
 function BoardAttestationSection({ tenantId }: { tenantId: string }) {
-  const [list, setList]           = useState<AttestRecord[]>([])
-  const [loading, setLoading]     = useState(true)
-  const [showForm, setShowForm]   = useState(false)
-  const [result, setResult]       = useState<{ link: string; id: string; emailSent: boolean } | null>(null)
-  const [copied, setCopied]       = useState(false)
+  const [list, setList] = useState<AttestRecord[]>([])
+  const [loading, setLoading] = useState(true)
+  const [showForm, setShowForm] = useState(false)
+  const [result, setResult] = useState<{ link: string; id: string; emailSent: boolean } | null>(null)
+  const [copied, setCopied] = useState(false)
   const [submitting, setSubmitting] = useState(false)
-  const [err, setErr]             = useState('')
-
+  const [err, setErr] = useState('')
   const [form, setForm] = useState({
     attester_email: '', attester_name: '', attester_title: '',
     report_type: 'OSFI B-15', report_id: '', summary: '',
@@ -337,11 +400,7 @@ function BoardAttestationSection({ tenantId }: { tenantId: string }) {
   useEffect(() => {
     if (typeof window === 'undefined') return
     const prefill = window.sessionStorage.getItem('gw_attest_prefill_type')
-    if (prefill) {
-      setForm(f => ({ ...f, report_type: prefill }))
-      setShowForm(true)
-      window.sessionStorage.removeItem('gw_attest_prefill_type')
-    }
+    if (prefill) { setForm(f => ({ ...f, report_type: prefill })); setShowForm(true); window.sessionStorage.removeItem('gw_attest_prefill_type') }
   }, [])
 
   const REPORT_TYPES = ['OSFI B-15','TCFD','IFRS S2','GHG Protocol','ISO 14064','Annual ESG']
@@ -351,8 +410,7 @@ function BoardAttestationSection({ tenantId }: { tenantId: string }) {
     try {
       const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/attestations`)
       if (r.ok) { const d = await r.json(); setList(d.attestations || []) }
-    } catch {}
-    finally { setLoading(false) }
+    } catch {} finally { setLoading(false) }
   }, [tenantId])
 
   useEffect(() => { load() }, [load])
@@ -363,9 +421,7 @@ function BoardAttestationSection({ tenantId }: { tenantId: string }) {
     setSubmitting(true); setErr('')
     try {
       const r = await fetch(`${API_BASE}/api/tenants/${tenantId}/attestations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(form),
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form),
       })
       const d = await r.json()
       if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
@@ -385,8 +441,7 @@ function BoardAttestationSection({ tenantId }: { tenantId: string }) {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-white font-semibold flex items-center gap-2">
-            <Lock className="w-4 h-4 text-gw-green" />
-            Board Attestation
+            <Lock className="w-4 h-4 text-gw-green" /> Board Attestation
           </h2>
           <p className="text-sm text-gw-muted mt-1">
             OSFI B-15 §5.3 governance sign-off. Board member clicks a link → cryptographic SHA-256 seal stored in the compliance vault.
@@ -398,7 +453,6 @@ function BoardAttestationSection({ tenantId }: { tenantId: string }) {
         </button>
       </div>
 
-      {/* Request form */}
       {showForm && !result && (
         <form onSubmit={request} className="bg-gw-dark border border-gw-border rounded-lg p-4 space-y-3">
           <div className="text-sm font-medium text-white mb-2">New Attestation Request</div>
@@ -455,37 +509,28 @@ function BoardAttestationSection({ tenantId }: { tenantId: string }) {
               {submitting ? <><Loader className="w-3.5 h-3.5 animate-spin" /> Sending…</> : <><Send className="w-3.5 h-3.5" /> Send Request</>}
             </button>
             <button type="button" onClick={() => setShowForm(false)}
-              className="px-4 py-1.5 border border-gw-border text-gw-muted rounded text-sm hover:text-white">
-              Cancel
-            </button>
+              className="px-4 py-1.5 border border-gw-border text-gw-muted rounded text-sm hover:text-white">Cancel</button>
           </div>
         </form>
       )}
 
-      {/* Success */}
       {result && (
         <div className="bg-gw-green/10 border border-gw-green/30 rounded-lg p-4 space-y-2">
           <div className="flex items-center gap-2 text-gw-green font-medium text-sm">
             <CheckCircle className="w-4 h-4" />
-            Attestation request created
-            {result.emailSent ? ' — email sent' : ' — email not configured, share link manually'}
+            Attestation request created{result.emailSent ? ' — email sent' : ' — share link manually'}
           </div>
           <div className="text-xs text-gw-muted">ID: <span className="font-mono text-white">{result.id}</span></div>
           <div className="flex items-center gap-2 bg-gw-dark border border-gw-border rounded px-3 py-2">
             <span className="text-xs font-mono text-gw-muted flex-1 truncate">{result.link}</span>
-            <button onClick={() => copyLink(result.link)}
-              className="text-xs text-gw-green hover:underline flex-shrink-0">
+            <button onClick={() => copyLink(result.link)} className="text-xs text-gw-green hover:underline flex-shrink-0">
               {copied ? 'Copied!' : 'Copy'}
             </button>
           </div>
-          <button onClick={() => { setResult(null); setShowForm(false) }}
-            className="text-xs text-gw-muted hover:text-white">
-            Done
-          </button>
+          <button onClick={() => { setResult(null); setShowForm(false) }} className="text-xs text-gw-muted hover:text-white">Done</button>
         </div>
       )}
 
-      {/* Past attestations */}
       {loading ? (
         <div className="text-sm text-gw-muted">Loading…</div>
       ) : list.length === 0 ? (
@@ -528,18 +573,12 @@ function BoardAttestationSection({ tenantId }: { tenantId: string }) {
                         <span className="font-mono text-gw-green text-xs" title={a.SealHash}>
                           {a.SealHash.slice(0,8)}&hellip;{a.SealHash.slice(-8)}
                         </span>
-                        <button
-                          onClick={() => { navigator.clipboard.writeText(a.SealHash!); }}
-                          className="text-[10px] text-gw-muted hover:text-gw-green underline shrink-0"
-                          title="Copy full SHA-256 seal hash">
-                          copy
-                        </button>
+                        <button onClick={() => navigator.clipboard.writeText(a.SealHash!)}
+                          className="text-[10px] text-gw-muted hover:text-gw-green underline shrink-0">copy</button>
                       </div>
                     ) : a.AttestationLink ? (
                       <button onClick={() => copyLink(a.AttestationLink!)}
-                        className="text-xs text-gw-muted hover:text-gw-green underline">
-                        Send link
-                      </button>
+                        className="text-xs text-gw-muted hover:text-gw-green underline">Send link</button>
                     ) : '—'}
                   </td>
                 </tr>
@@ -553,9 +592,7 @@ function BoardAttestationSection({ tenantId }: { tenantId: string }) {
 }
 
 function defaultFrom(): string {
-  const d = new Date()
-  d.setDate(1)  // first of current month
-  return d.toISOString().slice(0, 10)
+  const d = new Date(); d.setDate(1); return d.toISOString().slice(0, 10)
 }
 function defaultTo(): string {
   return new Date().toISOString().slice(0, 10)
